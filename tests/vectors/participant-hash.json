@@ -1,0 +1,195 @@
+{
+  "source": "Standalone JDK arithmetic comparison; no APK execution",
+  "cases": [
+    {
+      "version": 2,
+      "addresses": [],
+      "expected": "2:47DEQpj8"
+    },
+    {
+      "version": 2,
+      "addresses": [
+        [
+          "123@s.whatsapp.net",
+          0
+        ]
+      ],
+      "expected": "2:Q/lY81WD"
+    },
+    {
+      "version": 2,
+      "addresses": [
+        [
+          "123@s.whatsapp.net",
+          1
+        ]
+      ],
+      "expected": "2:w/SEpF5t"
+    },
+    {
+      "version": 2,
+      "addresses": [
+        [
+          "2@s.whatsapp.net",
+          0
+        ],
+        [
+          "10@s.whatsapp.net",
+          2
+        ]
+      ],
+      "expected": "2:SFTp5QxC"
+    },
+    {
+      "version": 2,
+      "addresses": [
+        [
+          "123@s.whatsapp.net",
+          0
+        ],
+        [
+          "123@s.whatsapp.net",
+          0
+        ]
+      ],
+      "expected": "2:nYlhRW1j"
+    },
+    {
+      "version": 2,
+      "addresses": [
+        [
+          "123@s.whatsapp.net",
+          0
+        ],
+        [
+          "456@lid",
+          0
+        ]
+      ],
+      "expected": "2:Tbu5z/iv"
+    },
+    {
+      "version": 2,
+      "addresses": [
+        [
+          "@lid",
+          0
+        ],
+        [
+          "𐀀@lid",
+          0
+        ]
+      ],
+      "expected": "2:zY2RNyqf"
+    },
+    {
+      "version": 2,
+      "addresses": [
+        [
+          "123@hosted",
+          128
+        ],
+        [
+          "456@hosted.lid",
+          129
+        ]
+      ],
+      "expected": "2:ggufqTOt"
+    },
+    {
+      "version": 3,
+      "addresses": [],
+      "expected": "3:47DEQpj8"
+    },
+    {
+      "version": 3,
+      "addresses": [
+        [
+          "123@s.whatsapp.net",
+          0
+        ]
+      ],
+      "expected": "3:MVpqc56w"
+    },
+    {
+      "version": 3,
+      "addresses": [
+        [
+          "123@s.whatsapp.net",
+          1
+        ]
+      ],
+      "expected": "3:tMPpeaqN"
+    },
+    {
+      "version": 3,
+      "addresses": [
+        [
+          "2@s.whatsapp.net",
+          0
+        ],
+        [
+          "10@s.whatsapp.net",
+          2
+        ]
+      ],
+      "expected": "3:wy2K7BWt"
+    },
+    {
+      "version": 3,
+      "addresses": [
+        [
+          "123@s.whatsapp.net",
+          0
+        ],
+        [
+          "123@s.whatsapp.net",
+          0
+        ]
+      ],
+      "expected": "3:SI7TZlV/"
+    },
+    {
+      "version": 3,
+      "addresses": [
+        [
+          "123@s.whatsapp.net",
+          0
+        ],
+        [
+          "456@lid",
+          0
+        ]
+      ],
+      "expected": "3:ZyvSc+A1"
+    },
+    {
+      "version": 3,
+      "addresses": [
+        [
+          "@lid",
+          0
+        ],
+        [
+          "𐀀@lid",
+          0
+        ]
+      ],
+      "expected": "3:O4S6wpry"
+    },
+    {
+      "version": 3,
+      "addresses": [
+        [
+          "123@hosted",
+          128
+        ],
+        [
+          "456@hosted.lid",
+          129
+        ]
+      ],
+      "expected": "3:F8UmAqC/"
+    }
+  ]
+}

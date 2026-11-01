@@ -1,0 +1,76 @@
+{
+  "source": "Synthetic signed ADV notification generated with a fresh test key; not captured traffic",
+  "account": "1@s.whatsapp.net",
+  "public_key": "4a0f997bc4761e877c8f3031ffac8939d7a0e235792734e09e548cbfadcc5d10",
+  "node": {
+    "tag": "notification",
+    "attrs": [
+      [
+        "id",
+        "signed-add"
+      ],
+      [
+        "from",
+        "1@s.whatsapp.net"
+      ],
+      [
+        "type",
+        "devices"
+      ]
+    ],
+    "data": null,
+    "children": [
+      {
+        "tag": "add",
+        "attrs": [
+          [
+            "device_hash",
+            "3:BxPUdBjH"
+          ]
+        ],
+        "data": null,
+        "children": [
+          {
+            "tag": "device",
+            "attrs": [
+              [
+                "jid",
+                {
+                  "jid": {
+                    "user": "1",
+                    "server": "s.whatsapp.net",
+                    "device": 2,
+                    "integrator": null,
+                    "flags": null
+                  }
+                }
+              ],
+              [
+                "key-index",
+                "2"
+              ]
+            ],
+            "data": null,
+            "children": null
+          },
+          {
+            "tag": "key-index-list",
+            "attrs": [
+              [
+                "ts",
+                "100"
+              ]
+            ],
+            "data": "CgoIBxBkGAIiAgECEkA/1el70mcpWJGzfjJl+nBuAqRfkxMm3NVw7BtLsK4dPvqHb73fXD9TX2cOllysYvtBwgGiZj0LakI1zGMlMGwC",
+            "children": null
+          }
+        ]
+      }
+    ]
+  },
+  "expected_devices": [
+    0,
+    1,
+    2
+  ]
+}

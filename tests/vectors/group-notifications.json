@@ -1,0 +1,300 @@
+{
+  "source": "Synthetic raw Node fixtures from Caa.A00/C11W.A0A/HD6.A05 field observations; not captured traffic",
+  "cases": [
+    {
+      "node": {
+        "tag": "notification",
+        "attrs": [
+          [
+            "id",
+            "group-0"
+          ],
+          [
+            "type",
+            "w:gp2"
+          ],
+          [
+            "from",
+            "G@g.us"
+          ],
+          [
+            "t",
+            "12345"
+          ]
+        ],
+        "data": null,
+        "children": [
+          {
+            "tag": "add",
+            "attrs": [],
+            "data": null,
+            "children": [
+              {
+                "tag": "participant",
+                "attrs": [
+                  [
+                    "jid",
+                    "b@s.whatsapp.net"
+                  ]
+                ],
+                "data": null,
+                "children": null
+              }
+            ]
+          }
+        ]
+      },
+      "accepted": true,
+      "action": "add"
+    },
+    {
+      "node": {
+        "tag": "notification",
+        "attrs": [
+          [
+            "id",
+            "group-1"
+          ],
+          [
+            "type",
+            "w:gp2"
+          ],
+          [
+            "from",
+            "G@g.us"
+          ],
+          [
+            "t",
+            "12345"
+          ]
+        ],
+        "data": null,
+        "children": [
+          {
+            "tag": "remove",
+            "attrs": [],
+            "data": null,
+            "children": [
+              {
+                "tag": "participant",
+                "attrs": [
+                  [
+                    "jid",
+                    "b@s.whatsapp.net"
+                  ]
+                ],
+                "data": null,
+                "children": null
+              }
+            ]
+          }
+        ]
+      },
+      "accepted": true,
+      "action": "remove"
+    },
+    {
+      "node": {
+        "tag": "notification",
+        "attrs": [
+          [
+            "id",
+            "group-2"
+          ],
+          [
+            "type",
+            "w:gp2"
+          ],
+          [
+            "from",
+            "G@g.us"
+          ],
+          [
+            "t",
+            "12345"
+          ],
+          [
+            "participant",
+            "b@s.whatsapp.net"
+          ]
+        ],
+        "data": null,
+        "children": [
+          {
+            "tag": "modify",
+            "attrs": [],
+            "data": null,
+            "children": [
+              {
+                "tag": "participant",
+                "attrs": [
+                  [
+                    "jid",
+                    "202@lid"
+                  ],
+                  [
+                    "phone_number",
+                    "c@s.whatsapp.net"
+                  ]
+                ],
+                "data": null,
+                "children": null
+              }
+            ]
+          }
+        ]
+      },
+      "accepted": true,
+      "action": "modify"
+    },
+    {
+      "node": {
+        "tag": "notification",
+        "attrs": [
+          [
+            "id",
+            "group-3"
+          ],
+          [
+            "type",
+            "w:gp2"
+          ],
+          [
+            "from",
+            "G@g.us"
+          ],
+          [
+            "t",
+            "12345"
+          ]
+        ],
+        "data": null,
+        "children": [
+          {
+            "tag": "modify",
+            "attrs": [],
+            "data": null,
+            "children": [
+              {
+                "tag": "participant",
+                "attrs": [
+                  [
+                    "jid",
+                    "b@s.whatsapp.net"
+                  ]
+                ],
+                "data": null,
+                "children": null
+              }
+            ]
+          }
+        ]
+      },
+      "accepted": false,
+      "action": "modify"
+    },
+    {
+      "node": {
+        "tag": "notification",
+        "attrs": [
+          [
+            "id",
+            "group-4"
+          ],
+          [
+            "type",
+            "w:gp2"
+          ],
+          [
+            "from",
+            "G@g.us"
+          ],
+          [
+            "t",
+            "12345"
+          ]
+        ],
+        "data": null,
+        "children": [
+          {
+            "tag": "add",
+            "attrs": [],
+            "data": null,
+            "children": [
+              {
+                "tag": "participant",
+                "attrs": [
+                  [
+                    "jid",
+                    "b@s.whatsapp.net"
+                  ]
+                ],
+                "data": null,
+                "children": null
+              },
+              {
+                "tag": "participant",
+                "attrs": [
+                  [
+                    "jid",
+                    "b@s.whatsapp.net"
+                  ]
+                ],
+                "data": null,
+                "children": null
+              }
+            ]
+          }
+        ]
+      },
+      "accepted": false,
+      "action": "add"
+    },
+    {
+      "node": {
+        "tag": "notification",
+        "attrs": [
+          [
+            "id",
+            "group-5"
+          ],
+          [
+            "type",
+            "w:gp2"
+          ],
+          [
+            "from",
+            "G@g.us"
+          ],
+          [
+            "t",
+            "12345"
+          ]
+        ],
+        "data": null,
+        "children": [
+          {
+            "tag": "promote",
+            "attrs": [],
+            "data": null,
+            "children": [
+              {
+                "tag": "participant",
+                "attrs": [
+                  [
+                    "jid",
+                    "b@s.whatsapp.net"
+                  ]
+                ],
+                "data": null,
+                "children": null
+              }
+            ]
+          }
+        ]
+      },
+      "accepted": false,
+      "action": "promote"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+recursive-include tests *.py *.json
+recursive-include examples *.py
+recursive-include scripts *.py
+recursive-include docs *.md
+prune local-integration
