@@ -81,18 +81,26 @@ class StanzaDelivery:
 
     def dispatch(self, prepared_id, send):
         self.store.db.require_no_transaction()
-        self.delivery.prepared(prepared_id)  # Validate namespace even for cached wire.
-        row = self.store._get("stanza-wire", prepared_id)
-        if row is None:
-            raise KeyError(prepared_id)
-        state = self.store._get("stanza-state", prepared_id)
-        if state and state[0] == b"server_ack":
-            return
+        with self.store.db.atomic():
+            packets = self.delivery.prepared(prepared_id)  # Check cached wire's namespace.
+            row = self.store._get("stanza-wire", prepared_id)
+            if row is None:
+                raise KeyError(prepared_id)
+            state = self.store._get("stanza-state", prepared_id)
+            if state and state[0] == b"server_ack":
+                self.delivery._mark_submitted(prepared_id)
+                return
+            if all(self.delivery._acknowledged(prepared_id, p) for p in packets):
+                self.delivery._mark_submitted(prepared_id)
+                if state and state[0] == b"prepared":
+                    self.store._put("stanza-state", prepared_id, b"submitted")
+                return
         send(prepared_id, row[0])
         with self.store.db.atomic():
             current = self.store._get("stanza-state", prepared_id)
             if current and current[0] == b"prepared":
                 self.store._put("stanza-state", prepared_id, b"submitted")
+            self.delivery._mark_submitted(prepared_id)
 
     def apply_control(self, prepared_id, node, *, authenticated_transport):
         if authenticated_transport is not True:
@@ -116,6 +124,14 @@ class StanzaDelivery:
                 source.server,
             ) != (destination.user, destination.server):
                 raise ValueError("Control source does not match destination")
+            if control.kind in ("server_ack", "error"):
+                if destination.device and source.device not in (0, destination.device):
+                    raise ValueError("ACK source device does not match destination")
+                if control.participant is not None and (
+                    "participant" not in a
+                    or address_from_jid(control.participant) != address_from_jid(a["participant"])
+                ):
+                    raise ValueError("ACK participant does not match prepared stanza")
             if control.kind == "error":
                 self.store._put(
                     "stanza-error",

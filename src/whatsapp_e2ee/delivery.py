@@ -12,6 +12,18 @@ class Delivery:
     def __init__(self, store):
         self.store = store
 
+    def _acknowledged(self, id, packet):
+        marker = key(id, packet.recipient, packet.device, packet.kind)
+        row = self.store._get("receipt", marker)
+        return row is not None and int(row[0]) >= LEVELS["server_ack"]
+
+    def _mark_submitted(self, id):
+        """Advance the outbox checkpoint inside the caller's transaction."""
+        self.store.db.connection.execute(
+            "UPDATE outbox SET state='submitted' WHERE owner=? AND id=? AND state='prepared'",
+            (self.store.owner, id),
+        )
+
     def prepared(self, id):
         with self.store.db.atomic() as c:
             row = c.execute(
@@ -47,25 +59,23 @@ class Delivery:
         self.store.db.require_no_transaction()
         packets = self.prepared(id)
         for p in packets:
-            marker = key(id, p.recipient, p.device, p.kind)
-            row = self.store._get("receipt", marker)
-            if row and int(row[0]) >= 1:
+            if self._acknowledged(id, p):
                 continue
             send(id, p)
-        with self.store.db.atomic() as c:
-            c.execute(
-                "UPDATE outbox SET state='submitted' WHERE owner=? AND id=? AND state='prepared'",
-                (self.store.owner, id),
-            )
+        with self.store.db.atomic():
+            self._mark_submitted(id)
 
     def receipt(self, id, packet, level):
         rank = LEVELS[level]
         with self.store.db.atomic():
-            if packet not in self.prepared(id):
+            packets = self.prepared(id)
+            if packet not in packets:
                 raise ValueError("Receipt target not in prepared message")
             marker = key(id, packet.recipient, packet.device, packet.kind)
             row = self.store._get("receipt", marker)
             self.store._put("receipt", marker, str(max(rank, int(row[0]) if row else 0)).encode())
+            if all(self._acknowledged(id, p) for p in packets):
+                self._mark_submitted(id)
 
 
 __all__ = ["LEVELS", "Delivery"]

@@ -108,6 +108,12 @@ SQLite 主动回滚整个事务时，所有外层 `atomic()` 块一起失效，�
 
 `pending_events()` 读取待处理事件，`acknowledge_event(id)` 标记事件完成。server ACK 与接收设备的 delivery/read 回执分开处理；逐目标回执保持单调状态。
 
+发送回调成功后，stanza 与 outbox 的提交检查点在同一事务内更新；全部数据包已获 ACK 或设备确认时，outbox 也推进到 submitted。整条 stanza 在全部目标已确认后停止重发；部分设备确认仍保留整条冻结节点的重试，群成员回执只更新对应成员。设备专属 ACK 必须匹配目标设备，携带 participant 的群 ACK 必须匹配已冻结的 participant。批量回执每次只更新显式传给 `apply_control` 的消息，其余 ID 由调用方逐条解析应用。
+
+旧记录若已有持久确认但 outbox 仍为 prepared，投递入口会补齐 submitted 状态并停止重发。
+
+普通 ACK 和 delivery/read 解析器在更新状态前拒绝原始负载、非法子节点或嵌套列表项、异常设备地址和空错误值。其他控制形式需要相应业务处理器；发送或读取回执的 ID 均须为非空字符串。
+
 ### 设备目录与群生命周期
 
 `DeviceDirectory.apply_query` 默认要求 ADV 验签，身份来自已信任的主设备记录或显式 `identity_lookup`。由外部可信来源提供的无证明快照可显式使用 `verification="trusted_snapshot"`；快照携带证明时仍执行验签。
@@ -239,6 +245,12 @@ Call dispatch, media upload, and upload reconciliation after the outer database 
 If SQLite rolls back the entire transaction, all enclosing `atomic()` blocks become unusable and the original database exception is preserved. Even if the caller catches that exception, it must exit the outermost transaction before retrying; later session and outbox writes cannot commit independently. An ordinary failure rolled back to a savepoint still allows the outer transaction to continue.
 
 `pending_events()` reads pending events, and `acknowledge_event(id)` marks an event complete. Server ACKs are handled separately from recipient-device delivery/read receipts; per-target receipt state is monotonic.
+
+After a successful send callback, stanza and outbox submission checkpoints update in one transaction. The outbox also advances to submitted when all packets have an ACK or device confirmation. Whole-stanza retransmission stops once every target is confirmed; partial confirmation retains retries of the entire frozen node, and group-member receipts update only that member. Device-specific ACKs must match the destination device, and group ACKs carrying a participant must match the frozen participant. Each batched-receipt application updates only the message explicitly passed to `apply_control`; the caller resolves and applies the other IDs individually.
+
+For legacy records with durable confirmation but an outbox still marked prepared, dispatch repairs the submitted checkpoint and suppresses retransmission.
+
+Ordinary ACK and delivery/read parsers reject raw payloads, invalid children or nested list items, invalid device addresses, and empty error values before updating state. Other control forms need their corresponding business handlers. IDs used to send or acknowledge receipts must be nonempty strings.
 
 ### Device directory and group lifecycle
 
