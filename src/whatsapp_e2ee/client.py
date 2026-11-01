@@ -81,9 +81,9 @@ class Client:
     ):
         """Freeze a recipient snapshot. Distribution is prepared, not receipt-confirmed.
 
-        Pending outbox batches must be retried in order. Explicit redistribution
-        uses the persisted original batch; a later chain snapshot cannot recover
-        an earlier missing message key.
+        Pending outbox batches must be retried in order. Keep the persisted
+        original batch: a later chain checkpoint alone cannot recover an earlier
+        missing message key.
         """
         recipients = sorted(set(recipients), key=lambda a: (a.name, a.device_id))
         if not recipients:

@@ -26,7 +26,7 @@ def _one(node, tag, *, required=True):
 
 def _account(value):
     if isinstance(value, JID):
-        if value.device:
+        if not value.user or value.device:
             raise ValueError("Expected user JID, not device JID")
         value = f"{value.user}@{value.server}"
     account_parts(value)

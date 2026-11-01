@@ -3,12 +3,13 @@
 import base64
 import json
 
-from signal_protocol import WHATSAPP, WhatsAppGroupCipher, WhatsAppSessionCipher
-from signal_protocol.groups import GroupSessionBuilder, SenderKeyName
+from signal_protocol import WHATSAPP, WhatsAppSessionCipher
+from signal_protocol.groups import SenderKeyName
 from signal_protocol.protocol import SenderKeyDistributionMessage
 from signal_protocol.store import Direction
 
 from whatsapp_e2ee import payload
+from whatsapp_e2ee.group_sessions import decrypt_group, install_distribution
 from whatsapp_e2ee.packets import Conflict, digest
 from whatsapp_e2ee.store import key
 
@@ -93,6 +94,8 @@ class MessageReceiver:
                     raise ValueError("Nested own-device wrappers are not supported")
             if content_slot == "distribution" and not m.HasField("sender_key_distribution_message"):
                 raise ValueError("Distribution slot lacks a sender key distribution")
+            if packet.kind == "skmsg" and m.HasField("sender_key_distribution_message"):
+                raise ValueError("SenderKey distribution requires a pairwise packet")
             return m
 
         fingerprint = digest(key(packet.as_dict()).encode())
@@ -135,8 +138,8 @@ class MessageReceiver:
                     distribution = SenderKeyDistributionMessage.from_bytes(
                         d.distribution, profile=WHATSAPP
                     )
-                    GroupSessionBuilder(self.store, profile=WHATSAPP).process(
-                        SenderKeyName(d.group_id, sender), distribution
+                    install_distribution(
+                        self.store, SenderKeyName(d.group_id, sender), distribution
                     )
                 if row is None:
                     c.execute(
@@ -150,9 +153,9 @@ class MessageReceiver:
                 remember_attempt(raw)
 
             if packet.kind == "skmsg":
-                return WhatsAppGroupCipher(
-                    self.store, SenderKeyName(expected_group, sender)
-                ).decrypt(packet.ciphertext, accept)
+                return decrypt_group(
+                    self.store, SenderKeyName(expected_group, sender), packet.ciphertext, accept
+                )
             raw = WhatsAppSessionCipher(self.store, sender).decrypt(
                 packet.ciphertext,
                 accept,

@@ -27,7 +27,13 @@ class GroupLifecycle:
         self.client, self.store = client, client.store
 
     def apply(self, event_id, group, recipients, *, revision, reason="snapshot", affected=()):
-        if not event_id or not group or reason not in REASONS:
+        if (
+            not isinstance(event_id, str)
+            or not event_id
+            or not isinstance(group, str)
+            or not group
+            or reason not in REASONS
+        ):
             raise ValueError("Invalid group event")
         if type(revision) is not int or revision < 0:
             raise ValueError("Invalid group revision")
@@ -123,7 +129,7 @@ class GroupNotification:
 
 def _group(value):
     if isinstance(value, JID):
-        if value.device or value.server != "g.us":
+        if not value.user or value.device or value.server != "g.us":
             raise ValueError("Expected ordinary group JID")
         value = f"{value.user}@{value.server}"
     if not isinstance(value, str) or value.count("@") != 1:

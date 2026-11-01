@@ -45,7 +45,7 @@ python -m build
 | `payload` | 文本、引用、提及、转发上下文、deviceSent、SKDM、媒体描述符、缩略图和扫描布局字段；保留未知字段。 |
 | `devices`、`addressing`、`device_discovery`、`device_directory`、`device_notifications`、`routing` | 设备查询、PN/LID 别名、设备缓存、参与者哈希、逐设备分发和自身关联设备包装；`devices` 保留兼容导入入口。 |
 | `adv` | 原始 key-index-list 字节验签、身份与时间绑定，以及有效设备索引过滤。 |
-| `groups_lifecycle` | 群成员与设备快照、事件幂等、SenderKey 轮换和定向重新分发。 |
+| `groups_lifecycle`、`group_sessions` | 群成员与设备快照、事件幂等、SenderKey 轮换、定向重新分发及接收检查点合并。 |
 | `stanza`、`control` | message/participants/enc 节点、可信接收路由、ACK 和批量 delivery/read 回执。 |
 | `retry`、`transport` | retry receipt、公开 bundle 和受限新 attempt；冻结节点字节、重启重传与逐目标回执。 |
 | `media`、`media_files` | mediaKey/KDF、CBC/MAC、双摘要、文件流、sidecar、认证块缓存和完整文件发布。 |
@@ -120,6 +120,10 @@ SQLite 主动回滚整个事务时，所有外层 `atomic()` 块一起失效，�
 
 `DeviceNotifications` 默认沿用目录的身份查询器，也可显式指定独立的 `identity_lookup`；它处理远端设备增删和离线失效通知，`GroupNotifications` 处理普通群的 add/remove/modify。目录更新使用 revision 和有效期约束；过期快照需要显式刷新。群发送冻结成员与设备快照，成员或设备变化可以触发 SenderKey 轮换或定向重新分发。自身设备生命周期、身份替换和 raw-ID 重置由上层显式处理。
 
+群协议重试同时检查调用方提供的当前设备列表、已持久化的群设备快照和本地成员状态。成员被移除或本机退群后，旧设备列表不能使新尝试或已缓存的协议重试通过校验；成员检查与重加密共用事务。历史 outbox 的冻结字节仍可按原批次读取，不会重新分发当前代 SenderKey。群事件 ID 必须为非空字符串，群和成员 JID 必须包含用户部分。
+
+接收方按 key ID 与签名公钥共同区分 SenderKey 代次。同代 SKDM 合并检查点，保留最多 2000 个跳过的消息密钥，不回退接收链；较早的合法检查点可补齐 2000 步以内的历史缺口。更大的前向检查点直接接续，并保留已有缓存，不进行无限派生；仅有较晚检查点不能还原更早的缺失密钥，应保留原分发批次或发起协议重试。接收记录最多保留五个不同代次，重复分发不占用额外代次；轮换发生 key ID 碰撞时通过签名选择对应代次。旧格式的重复记录在接收时合并，SKDM 必须通过绑定群上下文的单聊密文传递。链密钥长度、检查点冲突、签名或后续提交失败时，接收链、单聊会话、inbox 与事件一并回滚。
+
 多设备发送和群初始化的别名、成员校验与持久化共用事务。传给 `prepare_chat` 的目录必须与客户端共用 `Database` 实例和 `owner`。设备 99 默认从对应的 PN/LID 账号读取自身设备快照，发送地址仍保留 `hosted/hosted.lid` 域，且不向本机设备发送副本。
 
 ### 媒体处理
@@ -149,6 +153,8 @@ SQLite 主动回滚整个事务时，所有外层 `atomic()` 块一起失效，�
 离线测试覆盖 Store 契约、v3/v4 与三种 ML-KEM 配置、SenderKey 分发/乱序/轮换、提交失败与进程中断、线程与进程并发、完整消息节点、设备哈希、协议重试、媒体认证及适配器故障。兼容性测试覆盖公开导入、值对象序列化、outbox 回滚与重启复用。
 
 [完整处理流程测试](tests/test_end_to_end_pipeline.py) 展示设备查询、节点组装、回执、群附件和分块下载；[模块契约测试](tests/test_module_contracts.py) 展示持久化与兼容接口约束。
+
+[群恢复边界测试](tests/test_group_recovery_boundaries.py) 覆盖成员移除与并发重试、退群、同代乱序分发、旧记录合并、key ID 碰撞、有限密钥缓存和事务失败后的恢复。
 
 调用方接入经过认证的传输、实时账号状态、可信设备与群元数据、服务端媒体地址，以及对应的凭据。Noise 连接层由外部提供。特殊 receipt、状态、频道、广播、interop 和一次性 SenderKey 需要各自的业务处理器；未支持的合法 protobuf 字段保留原始内容。
 
@@ -193,7 +199,7 @@ Runtime code uses a shallow `src/whatsapp_e2ee/` layout, offline tests live in `
 | `payload` | Text, quotes, mentions, forwarding context, deviceSent, SKDM, media descriptors, thumbnails, and scan layout fields; unknown fields are preserved. |
 | `devices`, `addressing`, `device_discovery`, `device_directory`, `device_notifications`, `routing` | Device discovery, PN/LID aliases, device caches, participant hashes, per-device distribution, and linked-device wrappers; `devices` retains compatible import paths. |
 | `adv` | Signature verification over original key-index-list bytes, identity and time binding, and filtering of valid device indexes. |
-| `groups_lifecycle` | Group member and device snapshots, event idempotency, SenderKey rotation, and targeted redistribution. |
+| `groups_lifecycle`, `group_sessions` | Group member and device snapshots, event idempotency, SenderKey rotation, targeted redistribution, and receiving-checkpoint merging. |
 | `stanza`, `control` | message/participants/enc nodes, trusted receive routing, ACKs, and batched delivery/read receipts. |
 | `retry`, `transport` | Retry receipts, public bundles, and bounded new attempts; frozen node bytes, retransmission after restart, and per-target receipts. |
 | `media`, `media_files` | mediaKey/KDF, CBC/MAC, dual hashes, file streams, sidecars, authenticated chunk caches, and complete-file publication. |
@@ -268,6 +274,10 @@ Ordinary ACK and delivery/read parsers reject raw payloads, invalid children or 
 
 `DeviceNotifications` uses the directory's identity lookup by default and accepts an explicit separate `identity_lookup`. It handles remote device additions, removals, and offline invalidation notifications. `GroupNotifications` handles ordinary group add/remove/modify events. Directory updates are constrained by revisions and expiry times; expired snapshots require an explicit refresh. Group sends freeze member and device snapshots. Membership or device changes can trigger SenderKey rotation or targeted redistribution. The caller explicitly handles local-device lifecycle, identity replacement, and raw-ID resets.
 
+Group protocol retries check the caller's current device list, the persisted group-device snapshot, and local membership state together. After a recipient is removed or the local account leaves, a stale device list cannot authorize a new attempt or a cached protocol retry. Membership checks and re-encryption share a transaction. Frozen bytes from historical outbox batches remain readable without redistributing the current SenderKey generation. Group event IDs must be nonempty strings, and group and member JIDs must include a user part.
+
+Receivers distinguish SenderKey generations by both key ID and signing public key. Same-generation SKDMs merge checkpoints, retain at most 2000 skipped message keys, and never rewind the receiving chain. An earlier valid checkpoint can fill historical gaps within 2000 steps. Larger forward checkpoints resume directly while preserving existing cached keys, without unbounded derivation. A later checkpoint alone cannot recover earlier missing keys; retain the original distribution batch or request a protocol retry. Receiving records retain at most five distinct generations, and repeat distributions do not consume additional generation slots. Signatures select the matching generation when rotated key IDs collide. Legacy duplicate records merge during reception. SKDMs must arrive in pairwise ciphertext bound to the group context. Invalid chain-key lengths, conflicting checkpoints, signature failures, or subsequent commit failures roll back the receiving chain, pairwise session, inbox, and events together.
+
 Alias and membership checks for multi-device sends and group initialization share the persistence transaction. A directory passed to `prepare_chat` must share the client's `Database` instance and `owner`. Device 99 defaults to its corresponding PN/LID account for the own-device snapshot, retains its `hosted/hosted.lid` sending address, and excludes itself from linked-device copies.
 
 ### Media processing
@@ -297,5 +307,7 @@ Complete downloads validate lengths, key types, and hashes before issuing GET an
 Offline tests cover Store contracts, v3/v4 and three ML-KEM configurations, SenderKey distribution/reordering/rotation, commit failures and process interruption, thread and process concurrency, complete message nodes, device hashes, protocol retries, media authentication, and adapter failures. Compatibility tests cover public imports, value serialization, outbox rollback, and reuse after restart.
 
 The [complete pipeline tests](tests/test_end_to_end_pipeline.py) demonstrate device discovery, node assembly, receipts, group attachments, and chunked downloads. The [module contract tests](tests/test_module_contracts.py) demonstrate persistence and compatibility interface constraints.
+
+The [group recovery boundary tests](tests/test_group_recovery_boundaries.py) cover membership removal with concurrent retries, local departure, reordered same-generation distributions, legacy-record merging, key ID collisions, bounded key caches, and recovery after transaction failures.
 
 Callers supply authenticated transport, live account state, trusted device and group metadata, server media addresses, and the corresponding credentials. The Noise connection layer is supplied externally. Special receipts, status, channels, broadcasts, interop, and one-time SenderKey require their own business handlers; unsupported valid protobuf fields retain their original content.

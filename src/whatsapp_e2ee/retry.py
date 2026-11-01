@@ -270,6 +270,18 @@ class RetryManager:
                     or request.sender not in current_group_devices
                 ):
                     raise ValueError("Retry requester is not a current group recipient")
+                snapshot = self.store._get("group-snapshot", key(group_id, self.store.bucket))
+                if (
+                    snapshot
+                    and [request.sender.name, request.sender.device_id]
+                    not in json.loads(snapshot[0])["members"]
+                ):
+                    raise ValueError("Retry requester is not in the current group snapshot")
+                membership = self.store._get(
+                    "group-accounts", key(group_id, self.store.bucket, self.store.space)
+                )
+                if membership and not json.loads(membership[0])["active"]:
+                    raise ValueError("Local account is not a current group member")
                 raw = base64.b64decode(
                     original[3] if original[0] == "group" else original[6], validate=True
                 )
