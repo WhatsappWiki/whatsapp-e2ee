@@ -49,7 +49,7 @@ python -m build
 | `stanza`、`control` | message/participants/enc 节点、可信接收路由、ACK 和批量 delivery/read 回执。 |
 | `retry`、`transport` | retry receipt、公开 bundle 和受限新 attempt；冻结节点字节、重启重传与逐目标回执。 |
 | `media`、`media_files` | mediaKey/KDF、CBC/MAC、双摘要、文件流、sidecar、认证块缓存和完整文件发布。 |
-| `media_jobs`、`media_layout`、`media_transfer` | 大文件准备、密钥创建时间、缩略图绑定、扫描布局、HTTP 适配，以及上传结果不确定时的恢复与对账。 |
+| `media_jobs`、`media_layout`、`media_transfer`、`upload_coordination` | 大文件准备、密钥创建时间、缩略图绑定、扫描布局、HTTP 适配，以及上传互斥、恢复与对账。 |
 
 `Client` 组合 `Outbox` 与 `MessageReceiver`：发送方在同一事务中推进密钥状态并保存密文，接收方在认证解密后提交 inbox、去重记录和业务事件。`database` 管理连接、schema 与事务，`store` 提供协议记录存取。
 
@@ -102,7 +102,7 @@ wire = queue.prepare("message-id", peer.name)
 
 `own_device_check` 在接收事务内执行，只做本地判定；查询设备目录时须复用客户端的同一个 `Database` 实例。自身设备判定与接收提交使用同一事务，避免并发撤销别名后仍使用旧判定接收自身设备副本。
 
-投递、媒体上传、上传对账、分块下载和 `RangeDownload.finalize()` 必须在关联数据库的外层事务结束后调用；存在活动事务时抛出 `RuntimeError`，防止网络回调或文件发布依赖尚未提交的检查点。
+投递、媒体上传、上传对账、`MediaJobs.prepare_file()`、分块下载和 `RangeDownload.finalize()` 必须在关联数据库的外层事务结束后调用；存在活动事务时抛出 `RuntimeError`，防止网络回调或文件发布依赖尚未提交的检查点。
 
 SQLite 主动回滚整个事务时，所有外层 `atomic()` 块一起失效，并保留原始数据库异常。即使调用方捕获异常，也必须退出最外层事务后才能重试，后续会话与 outbox 写入不能独立提交。只回滚到保存点的普通失败仍允许外层事务继续。
 
@@ -128,7 +128,13 @@ SQLite 主动回滚整个事务时，所有外层 `atomic()` 块一起失效，�
 
 `Uploads` 与下载函数接收显式 transport 回调；调用方提供端点、认证头和网络实现。上传中断后保留 `in_flight/unknown`，先对账为 found/absent/unknown；unknown 状态不自动重新 POST。
 
-上传成功记录与待对账状态独立于本地密文缓存保存。即使缓存被清理，已成功上传仍返回原回执，结果不确定时仍要求先对账，不会自动重新 POST。只有新的上传尝试才校验本地密文；对账确认 absent 后若缓存缺失，须先用相同源文件和已保留的 key 显式重建，再重新上传。
+同一数据库、owner 和媒体任务 ID 的发送与对账在工作者之间互斥，竞争操作抛出 `UploadUncertain`；无关任务可独立执行。持久数据库使用旁边的 `.wa-upload-locks/` 协调线程、独立连接与进程，回调期间不持有 SQLite 事务。工作者运行时须保留并共享这些锁文件；进程退出会释放操作锁，原有不确定检查点仍须显式对账。传输与查询回调须同步完成或终止本地操作，不能在返回后继续后台发送；absent 必须来自权威查询，不能由等待时长推断。
+
+互斥层只将获取锁时的竞争失败转换为 `UploadUncertain`；回调异常与取消不被互斥层改写，退出时释放操作锁。
+
+上传成功记录与待对账状态独立于本地密文缓存保存。即使缓存被清理，已成功上传仍返回原回执，结果不确定时仍要求先对账，不会自动重新 POST。只有新的上传尝试才校验本地密文；对账确认 absent 后若缓存缺失或损坏，须先用相同源文件和已保留的 key 显式重建，再重新上传。显式重建不改变原密钥、创建时间或已有成功记录。
+
+成功记录优先于过期查询结果，已完成任务再次对账会直接复用原回执。`UploadReceipt` 必须包含非空路径、32 字节密文摘要和与密钥创建时间一致的整数毫秒时间戳；空时间戳不会被补成默认值。媒体任务 ID 须为非空字符串。multipart 请求体只消费一次，取完声明长度的字节即视为消费完成；检测到文件增长时不会继续输出超出声明长度的数据。异常上传响应或本地提交失败保留可对账状态，不自动重发。
 
 完整文件和 Range 响应检查长度、范围与编码。对外文件通过完整 MAC、明文与密文双摘要、padding 和长度校验后原子发布。单块认证结果只用于下载恢复，完整文件校验通过后才发布最终输出。
 
@@ -191,7 +197,7 @@ Runtime code uses a shallow `src/whatsapp_e2ee/` layout, offline tests live in `
 | `stanza`, `control` | message/participants/enc nodes, trusted receive routing, ACKs, and batched delivery/read receipts. |
 | `retry`, `transport` | Retry receipts, public bundles, and bounded new attempts; frozen node bytes, retransmission after restart, and per-target receipts. |
 | `media`, `media_files` | mediaKey/KDF, CBC/MAC, dual hashes, file streams, sidecars, authenticated chunk caches, and complete-file publication. |
-| `media_jobs`, `media_layout`, `media_transfer` | Large-file preparation, key creation time, thumbnail binding, scan layouts, HTTP adapters, and recovery and reconciliation of uncertain upload results. |
+| `media_jobs`, `media_layout`, `media_transfer`, `upload_coordination` | Large-file preparation, key creation time, thumbnail binding, scan layouts, HTTP adapters, and upload exclusion, recovery, and reconciliation. |
 
 `Client` composes `Outbox` and `MessageReceiver`: senders advance key state and persist ciphertext in the same transaction, while receivers commit the inbox, deduplication records, and business events after authenticated decryption. `database` owns connections, the schema, and transactions; `store` provides protocol record access.
 
@@ -244,7 +250,7 @@ The receive entry point is `stanza.receive_message(..., authenticated_transport=
 
 `own_device_check` runs inside the receive transaction and must perform only local checks. Device-directory queries must reuse the client's same `Database` instance. Own-device classification and receive acceptance share one transaction, preventing concurrent alias revocation from leaving a stale authorization for a linked-device copy.
 
-Call dispatch, media upload, upload reconciliation, range download, and `RangeDownload.finalize()` after the associated database's outer transaction has ended. An active transaction raises `RuntimeError`, preventing network callbacks or file publication from relying on uncommitted checkpoints.
+Call dispatch, media upload, upload reconciliation, `MediaJobs.prepare_file()`, range download, and `RangeDownload.finalize()` after the associated database's outer transaction has ended. An active transaction raises `RuntimeError`, preventing network callbacks or file publication from relying on uncommitted checkpoints.
 
 If SQLite rolls back the entire transaction, all enclosing `atomic()` blocks become unusable and the original database exception is preserved. Even if the caller catches that exception, it must exit the outermost transaction before retrying; later session and outbox writes cannot commit independently. An ordinary failure rolled back to a savepoint still allows the outer transaction to continue.
 
@@ -270,7 +276,13 @@ Alias and membership checks for multi-device sends and group initialization shar
 
 `Uploads` and download functions accept explicit transport callbacks. Callers provide endpoints, authentication headers, and network implementations. Interrupted uploads retain `in_flight/unknown` state and are first reconciled as found/absent/unknown; an unknown result does not automatically trigger another POST.
 
-Successful upload records and pending reconciliation state persist independently of the local encrypted cache. If the cache is removed, a completed upload still returns its recorded receipt, and an uncertain upload still requires reconciliation without an automatic new POST. Only a new upload attempt validates local ciphertext. After an absent result, a missing cache must be explicitly rebuilt from the same source file and retained key before another upload.
+Sending and reconciliation for the same database, owner, and media job ID are mutually exclusive across workers; competing operations raise `UploadUncertain`, while unrelated jobs can proceed independently. Persistent databases use the adjacent `.wa-upload-locks/` directory to coordinate threads, separate connections, and processes without holding a SQLite transaction during callbacks. Keep and share these lock files while workers run. Process exit releases operation ownership, but an uncertain checkpoint still requires explicit reconciliation. Transport and lookup callbacks must synchronously finish or terminate their local operation and must not continue sending in the background after returning. An absent result must come from an authoritative lookup, never elapsed time alone.
+
+The coordination layer converts only lock-acquisition contention into `UploadUncertain`. It preserves callback exceptions and cancellation and releases operation ownership on exit.
+
+Successful upload records and pending reconciliation state persist independently of the local encrypted cache. If the cache is removed, a completed upload still returns its recorded receipt, and an uncertain upload still requires reconciliation without an automatic new POST. Only a new upload attempt validates local ciphertext. After an absent result, a missing or damaged cache must be explicitly rebuilt from the same source file and retained key before another upload. Explicit rebuilding preserves the original key, creation time, and any successful upload record.
+
+Durable completion takes precedence over stale lookup results, and reconciliation of an already completed job reuses its original receipt. `UploadReceipt` must contain a nonempty path, a 32-byte encrypted hash, and an integer millisecond timestamp matching key creation time; a missing timestamp is not replaced with a default. Media job IDs must be nonempty strings. A multipart body is consumed once and is complete when its declared bytes have been obtained. Detected file growth cannot emit bytes beyond the declared length. Invalid upload responses and local commit failures retain a recoverable state without automatic retransmission.
 
 Complete-file and Range responses are checked for length, range, and encoding. Output files are published atomically after full MAC, plaintext and ciphertext hashes, padding, and length checks pass. Individual authenticated chunks support download recovery; final output is published only after complete-file verification.
 

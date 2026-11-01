@@ -19,6 +19,8 @@ from urllib.parse import urlsplit
 
 from whatsapp_e2ee.media import IntegrityError, derive
 from whatsapp_e2ee.media_files import BLOCK, decrypt_file
+from whatsapp_e2ee.media_jobs import _validate_id
+from whatsapp_e2ee.upload_coordination import UploadBusy, upload_operation
 
 
 class TransferError(ValueError):
@@ -27,6 +29,21 @@ class TransferError(ValueError):
 
 class UploadUncertain(TransferError):
     pass
+
+
+class _UploadOperation:
+    def __init__(self, store, id):
+        self.operation = upload_operation(store, id)
+
+    def __enter__(self):
+        try:
+            self.operation.__enter__()
+        except UploadBusy as error:
+            # Only acquisition failures indicate competing upload ownership.
+            raise UploadUncertain(str(error)) from error
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self.operation.__exit__(exc_type, exc_value, traceback)
 
 
 @dataclass(frozen=True)
@@ -255,6 +272,8 @@ class _MultipartBody:
             with open(self.media.path, "rb") as source:
                 while chunk := source.read(BLOCK):
                     size += len(chunk)
+                    if size > self.size:
+                        raise IntegrityError("Prepared upload grew during transfer")
                     digest.update(chunk)
                     yield chunk
         else:
@@ -265,8 +284,8 @@ class _MultipartBody:
                 yield chunk
         if size != self.size or not hmac.compare_digest(digest.digest(), self.media.encrypted_hash):
             raise IntegrityError("Prepared upload bytes changed during transfer")
-        yield self.suffix
         self.finished = True
+        yield self.suffix
 
 
 class Uploads:
@@ -280,50 +299,96 @@ class Uploads:
         self.jobs, self.store = jobs, jobs.store
 
     def pending(self, id):
+        _validate_id(id)
         row = self.store._get("media-upload-attempt", id)
         return json.loads(row[0]) if row else None
 
     def _write(self, id, state):
         self.store._put("media-upload-attempt", id, json.dumps(state, sort_keys=True).encode())
 
+    def _operation(self, id):
+        _validate_id(id)
+        self.store.db.require_no_transaction()
+        return _UploadOperation(self.store, id)
+
     def _receipt(self, id, receipt, attempt):
         if (
             not isinstance(receipt, UploadReceipt)
+            or not isinstance(receipt.encrypted_hash, bytes)
+            or len(receipt.encrypted_hash) != 32
             or receipt.encrypted_hash.hex() != attempt["encrypted_hash"]
+            or not isinstance(receipt.direct_path, str)
+            or not receipt.direct_path
+            or type(receipt.timestamp_ms) is not int
+            or receipt.timestamp_ms < 0
         ):
-            raise TransferError("Upload receipt hash does not bind prepared media")
+            raise TransferError("Invalid upload receipt or prepared-media binding")
         self.jobs.mark_uploaded(id, receipt.direct_path, receipt.timestamp_ms)
-        attempt.update(
-            state="uploaded", direct_path=receipt.direct_path, timestamp_ms=receipt.timestamp_ms
+        completed = dict(
+            attempt,
+            state="uploaded",
+            direct_path=receipt.direct_path,
+            timestamp_ms=receipt.timestamp_ms,
         )
-        self._write(id, attempt)
+        self._write(id, completed)
         return receipt
 
     def reconcile(self, id, lookup):
-        self.store.db.require_no_transaction()
-        attempt = self.pending(id)
-        if attempt is None or attempt["state"] not in ("in_flight", "unknown"):
-            raise ValueError("No ambiguous upload to reconcile")
+        with self._operation(id):
+            return self._reconcile(id, lookup)
+
+    def _reconcile(self, id, lookup):
+        with self.store.db.atomic():
+            attempt = self.pending(id)
+            completed = self._completed(id, attempt)
+            if completed is not None:
+                return completed
+            if attempt is None or attempt["state"] not in ("in_flight", "unknown"):
+                raise ValueError("No ambiguous upload to reconcile")
         # lookup sees only a public content fingerprint and stable request ID.
         result = lookup(dict(attempt))
-        if not isinstance(result, Reconciliation) or result.status not in (
-            "found",
-            "absent",
-            "unknown",
-        ):
-            raise TransferError("Invalid upload reconciliation result")
         with self.store.db.atomic():
             current = self.pending(id)
+            completed = self._completed(id, current)
+            if completed is not None:
+                return completed
             if current != attempt:
                 raise TransferError("Upload state changed during reconciliation")
+            if not isinstance(result, Reconciliation) or result.status not in (
+                "found",
+                "absent",
+                "unknown",
+            ):
+                raise TransferError("Invalid upload reconciliation result")
             if result.status == "found":
                 return self._receipt(id, result.receipt, attempt)
             if result.receipt is not None:
                 raise TransferError("Unexpected receipt for absent/unknown upload")
             if result.status == "absent":
-                attempt["state"] = "absent"
-                self._write(id, attempt)
+                self._write(id, dict(attempt, state="absent"))
             return None
+
+    def _completed(self, id, previous):
+        """Honor durable completion before a stale attempt or lookup result."""
+        checkpoint = self.store._get("media-upload", id)
+        if checkpoint:
+            path, stamp = json.loads(checkpoint[0])
+            receipt = UploadReceipt(path, stamp, self.jobs.load(id).encrypted_hash)
+            if previous and (
+                previous["state"] != "uploaded"
+                or previous.get("direct_path") != path
+                or previous.get("timestamp_ms") != stamp
+            ):
+                return self._receipt(id, receipt, previous)
+            return receipt
+        if previous and previous["state"] == "uploaded":
+            receipt = UploadReceipt(
+                previous["direct_path"],
+                previous["timestamp_ms"],
+                bytes.fromhex(previous["encrypted_hash"]),
+            )
+            return self._receipt(id, receipt, previous)
+        return None
 
     def _check_outcome(self, id):
         """Return recorded success or require reconciliation, without cache I/O.
@@ -331,24 +396,22 @@ class Uploads:
         Call under the shared transaction. Completed/uncertain uploads outlive
         their local encrypted files; only a new POST needs those bytes.
         """
-        checkpoint = self.store._get("media-upload", id)
         previous = self.pending(id)
-        if checkpoint:
-            path, stamp = json.loads(checkpoint[0])
-            return UploadReceipt(path, stamp, self.jobs.load(id).encrypted_hash)
-        if previous and previous["state"] == "uploaded":
-            return UploadReceipt(
-                previous["direct_path"],
-                previous["timestamp_ms"],
-                bytes.fromhex(previous["encrypted_hash"]),
-            )
+        completed = self._completed(id, previous)
+        if completed is not None:
+            return completed
         if previous and previous["state"] in ("in_flight", "unknown"):
             raise UploadUncertain("Previous upload outcome needs explicit reconciliation")
         return None
 
     def send(self, id, url, transport, parse_receipt, *, headers=(), max_attempts=3):
+        with self._operation(id):
+            return self._send(
+                id, url, transport, parse_receipt, headers=headers, max_attempts=max_attempts
+            )
+
+    def _send(self, id, url, transport, parse_receipt, *, headers, max_attempts):
         # No full-file validation or callback occurs under the write transaction.
-        self.store.db.require_no_transaction()
         supplied = _headers(headers)
         if set(supplied) & {"content-length", "content-type"}:
             raise ValueError("Multipart framing headers are controlled by the adapter")
@@ -391,18 +454,27 @@ class Uploads:
                 response.close()
                 raise TransferError("Transport returned before draining the upload body")
             raw = read_response(response, 1024 * 1024)
-            if not 200 <= response.status < 300:
+            if type(response.status) is not int or not 200 <= response.status < 300:
                 raise TransferError("Upload response is not successful")
-            receipt = parse_receipt(response.status, _headers(response.headers), raw)
+            response_headers = _headers(response.headers)
+            if "content-length" in response_headers:
+                value = response_headers["content-length"]
+                if not value.isascii() or not value.isdigit() or int(value) != len(raw):
+                    raise TransferError("Upload response Content-Length mismatch")
+            receipt = parse_receipt(response.status, response_headers, raw)
             with self.store.db.atomic():
-                if self.pending(id) != attempt:
+                current = self.pending(id)
+                completed = self._completed(id, current)
+                if completed is not None:
+                    return completed
+                if current != attempt:
                     raise TransferError("Upload state changed before checkpoint")
                 return self._receipt(id, receipt, attempt)
         except BaseException:
             with self.store.db.atomic():
-                if self.pending(id) == attempt:
-                    attempt["state"] = "unknown"
-                    self._write(id, attempt)
+                current = self.pending(id)
+                if self._completed(id, current) is None and current == attempt:
+                    self._write(id, dict(attempt, state="unknown"))
             raise
 
 

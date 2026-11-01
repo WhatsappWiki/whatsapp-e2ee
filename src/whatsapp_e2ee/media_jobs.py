@@ -16,6 +16,11 @@ from whatsapp_e2ee.store import key
 _NOW = object()
 
 
+def _validate_id(id):
+    if not isinstance(id, str) or not id:
+        raise ValueError("A nonempty string media job ID is required")
+
+
 class MediaJobs:
     def __init__(self, store, *, clock_ms=None):
         self.store = store
@@ -23,6 +28,7 @@ class MediaJobs:
         self.clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
 
     def key_timestamp_ms(self, id):
+        _validate_id(id)
         row = self.store._get("media-key-time", id)
         if row is not None:
             return int(row[0])
@@ -51,6 +57,7 @@ class MediaJobs:
         return value
 
     def prepare(self, id, raw, kind, *, media_key_timestamp_ms=_NOW):
+        _validate_id(id)
         fingerprint = key(kind, sha(raw).hex()).encode()
         with self.store.db.atomic():
             old = self.store._get("media-request", id)
@@ -93,6 +100,7 @@ class MediaJobs:
                 self.store._put("media-state", id, b"uploaded")
 
     def load(self, id, *, verify_file=False):
+        _validate_id(id)
         row = self.store._get("media-file", id)
         if row is None:
             value = self.media.load(id)
@@ -128,6 +136,8 @@ class MediaJobs:
         preparations of identical input produce identical blob bytes. A changed
         source fails before publishing the final encrypted cache path.
         """
+        _validate_id(id)
+        self.store.db.require_no_transaction()
         size, digest = hash_file(source)
         fingerprint = key(kind, digest.hex()).encode()
         cache = Path(cache_directory).resolve()
@@ -164,8 +174,18 @@ class MediaJobs:
                 self.store._put("media-request", id, fingerprint)
                 self.store._put("media-state", id, b"preparing")
             ready = self.store._get("media-file", id)
-        if ready and path.exists():
-            return self.load(id, verify_file=True)
+        if ready:
+            value = self.load(id)
+            try:
+                current_size, current_hash = hash_file(path)
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    current_hash == value.encrypted_hash
+                    and current_size == (value.length // 16 + 1) * 16 + 10
+                ):
+                    return value
         fd, temporary = tempfile.mkstemp(prefix=".wa-job-", dir=cache)
         os.close(fd)
         try:
@@ -191,6 +211,8 @@ class MediaJobs:
 
     def prepare_thumbnail(self, parent_id, thumbnail_id, raw):
         """Ordinary image/video/document remote thumbnail, sharing parent root."""
+        _validate_id(parent_id)
+        _validate_id(thumbnail_id)
         with self.store.db.atomic():
             parent = self.load(parent_id)
             kind = {"gif": "video", "ptv": "video"}.get(parent.kind, parent.kind)
