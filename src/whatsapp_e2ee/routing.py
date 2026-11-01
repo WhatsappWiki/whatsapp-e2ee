@@ -22,29 +22,34 @@ def prepare_chat(
     bundles=None,
     directory=None,
 ):
-    targets = {a: raw for a in recipients}
-    if not targets:
-        raise ValueError("No destination devices")
-    if client.address in targets:
-        raise ValueError("Local device cannot be a remote recipient")
-    wrapped = payload.device_sent(destination, raw, phash)
-    for address in own_devices:
-        if address.name != client.address.name and not (
-            directory is not None and directory.same_user(address, client.address)
-        ):
-            raise ValueError(
-                "Own-device account must match the bound local account or explicit alias"
-            )
-        if address == client.address or (
-            directory is not None
-            and address.device_id == client.address.device_id
-            and directory.same_user(address, client.address)
-        ):
-            continue
-        if address in targets:
-            raise ValueError("Own and recipient device sets overlap")
-        targets[address] = wrapped
-    return client.prepare_direct(id, targets, bundles=bundles)
+    if directory is not None and (
+        directory.store.db is not client.store.db or directory.store.owner != client.store.owner
+    ):
+        raise ValueError("Directory and client must share a local owner/transaction")
+    with client.store.db.atomic():
+        targets = {a: raw for a in recipients}
+        if not targets:
+            raise ValueError("No destination devices")
+        if client.address in targets:
+            raise ValueError("Local device cannot be a remote recipient")
+        wrapped = payload.device_sent(destination, raw, phash)
+        for address in own_devices:
+            if address.name != client.address.name and not (
+                directory is not None and directory.same_user(address, client.address)
+            ):
+                raise ValueError(
+                    "Own-device account must match the bound local account or explicit alias"
+                )
+            if address == client.address or (
+                directory is not None
+                and address.device_id == client.address.device_id
+                and directory.same_user(address, client.address)
+            ):
+                continue
+            if address in targets:
+                raise ValueError("Own and recipient device sets overlap")
+            targets[address] = wrapped
+        return client.prepare_direct(id, targets, bundles=bundles)
 
 
 def prepare_group_snapshot(client, id, group, raw, recipients, *, revision, bundles=None):
@@ -85,14 +90,14 @@ def prepare_chat_from_directory(
     A directory belongs to the same database/owner. An alias is selected only by
     an explicit account parameter; crypto sessions are never implicitly migrated.
     """
-    from whatsapp_e2ee.addressing import participant_hash
+    from whatsapp_e2ee.addressing import participant_hash, user_account
 
     if directory.store.db is not client.store.db or directory.store.owner != client.store.owner:
         raise ValueError("Directory and client must share a local owner/transaction")
-    own_account = own_account or client.address.name
-    if not directory.same_user(own_account, client.address.name):
-        raise ValueError("Unbound own account")
+    own_account = own_account or user_account(client.address.name)
     with client.store.db.atomic():
+        if not directory.same_user(own_account, client.address.name):
+            raise ValueError("Unbound own account")
         recipients = tuple(d.address for d in directory.devices(destination, now=now))
         own_devices = tuple(d.address for d in directory.devices(own_account, now=now))
         if directory.same_user(destination, own_account):

@@ -94,7 +94,11 @@ wire = queue.prepare("message-id", peer.name)
 
 接收入口为 `stanza.receive_message(..., authenticated_transport=True, own_device_check=...)`。传输边界提供认证结果，可信设备目录负责自身设备判定。群 SKDM 与正文共用外部消息 ID，使用独立内部去重槽并在同一事务中处理。经过认证的合法重试可以推进会话状态，但不得改变逻辑正文，业务事件只提交一次。
 
+`own_device_check` 在接收事务内执行，只做本地判定；查询设备目录时须复用客户端的同一个 `Database` 实例。自身设备判定与接收提交使用同一事务，避免并发撤销别名后仍使用旧判定接收自身设备副本。
+
 投递、媒体上传和上传对账必须在外层数据库事务结束后调用；存在活动事务时抛出 `RuntimeError`，防止请求已发送但本地检查点随后回滚。
+
+SQLite 主动回滚整个事务时，所有外层 `atomic()` 块一起失效，并保留原始数据库异常。即使调用方捕获异常，也必须退出最外层事务后才能重试，后续会话与 outbox 写入不能独立提交。只回滚到保存点的普通失败仍允许外层事务继续。
 
 `pending_events()` 读取待处理事件，`acknowledge_event(id)` 标记事件完成。server ACK 与接收设备的 delivery/read 回执分开处理；逐目标回执保持单调状态。
 
@@ -103,6 +107,8 @@ wire = queue.prepare("message-id", peer.name)
 `DeviceDirectory.apply_query` 默认要求 ADV 验签，身份来自已信任的主设备记录或显式 `identity_lookup`。由外部可信来源提供的无证明快照可显式使用 `verification="trusted_snapshot"`；快照携带证明时仍执行验签。
 
 `DeviceNotifications` 默认沿用目录的身份查询器，也可显式指定独立的 `identity_lookup`；它处理远端设备增删和离线失效通知，`GroupNotifications` 处理普通群的 add/remove/modify。目录更新使用 revision 和有效期约束；过期快照需要显式刷新。群发送冻结成员与设备快照，成员或设备变化可以触发 SenderKey 轮换或定向重新分发。自身设备生命周期、身份替换和 raw-ID 重置由上层显式处理。
+
+多设备发送和群初始化的别名、成员校验与持久化共用事务。传给 `prepare_chat` 的目录必须与客户端共用 `Database` 实例和 `owner`。设备 99 默认从对应的 PN/LID 账号读取自身设备快照，发送地址仍保留 `hosted/hosted.lid` 域，且不向本机设备发送副本。
 
 ### 媒体处理
 
@@ -214,7 +220,11 @@ Preparation generates and persists ciphertext without network calls. The same me
 
 The receive entry point is `stanza.receive_message(..., authenticated_transport=True, own_device_check=...)`. The transport boundary supplies authentication results, and a trusted device directory determines whether a sender is a local linked device. Group SKDM and content share an external message ID, use separate internal deduplication slots, and are processed in the same transaction. Authenticated valid retries may advance session state but cannot change the logical body; business events are committed once.
 
+`own_device_check` runs inside the receive transaction and must perform only local checks. Device-directory queries must reuse the client's same `Database` instance. Own-device classification and receive acceptance share one transaction, preventing concurrent alias revocation from leaving a stale authorization for a linked-device copy.
+
 Call dispatch, media upload, and upload reconciliation after the outer database transaction has ended. An active transaction raises `RuntimeError`, preventing a sent request from losing its local checkpoint through a later rollback.
+
+If SQLite rolls back the entire transaction, all enclosing `atomic()` blocks become unusable and the original database exception is preserved. Even if the caller catches that exception, it must exit the outermost transaction before retrying; later session and outbox writes cannot commit independently. An ordinary failure rolled back to a savepoint still allows the outer transaction to continue.
 
 `pending_events()` reads pending events, and `acknowledge_event(id)` marks an event complete. Server ACKs are handled separately from recipient-device delivery/read receipts; per-target receipt state is monotonic.
 
@@ -223,6 +233,8 @@ Call dispatch, media upload, and upload reconciliation after the outer database 
 `DeviceDirectory.apply_query` requires ADV verification by default. Identity comes from a trusted primary-device record or an explicit `identity_lookup`. A snapshot without proof supplied by an external trusted source can explicitly use `verification="trusted_snapshot"`; any proof present in a snapshot is still verified.
 
 `DeviceNotifications` uses the directory's identity lookup by default and accepts an explicit separate `identity_lookup`. It handles remote device additions, removals, and offline invalidation notifications. `GroupNotifications` handles ordinary group add/remove/modify events. Directory updates are constrained by revisions and expiry times; expired snapshots require an explicit refresh. Group sends freeze member and device snapshots. Membership or device changes can trigger SenderKey rotation or targeted redistribution. The caller explicitly handles local-device lifecycle, identity replacement, and raw-ID resets.
+
+Alias and membership checks for multi-device sends and group initialization share the persistence transaction. A directory passed to `prepare_chat` must share the client's `Database` instance and `owner`. Device 99 defaults to its corresponding PN/LID account for the own-device snapshot, retains its `hosted/hosted.lid` sending address, and excludes itself from linked-device copies.
 
 ### Media processing
 

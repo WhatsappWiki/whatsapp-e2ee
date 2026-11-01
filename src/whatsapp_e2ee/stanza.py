@@ -281,6 +281,8 @@ def receive_message(client, node, *, authenticated_transport, own_device_check=N
     authenticated_transport is a required assertion from the transport boundary,
     not something this parser can establish. Own-device classification must use
     the caller's authenticated device directory, including explicit PN/LID maps.
+    The local-only check runs inside the receive transaction; database-backed
+    checks must share the client's Database instance to preserve that snapshot.
     """
     if authenticated_transport is not True:
         raise ValueError("Unauthenticated transport routing")
@@ -289,9 +291,9 @@ def receive_message(client, node, *, authenticated_transport, own_device_check=N
     expected_bucket = client.store.bucket if group else ""
     if any(bucket != expected_bucket for bucket in incoming.buckets):
         raise ValueError("Encrypted bucket does not match selected store")
-    own = bool(own_device_check and own_device_check(incoming.sender))
     output = []
     with client.store.db.atomic():
+        own = bool(own_device_check and own_device_check(incoming.sender))
         for packet, count in sorted(
             zip(incoming.packets, incoming.retry_counts), key=lambda item: item[0].kind == "skmsg"
         ):

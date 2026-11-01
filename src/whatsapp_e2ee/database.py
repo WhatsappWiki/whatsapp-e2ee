@@ -20,6 +20,7 @@ class Database:
         )
         self.lock = threading.RLock()
         self.depth = 0
+        self._rollback_only = False
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA synchronous=FULL")
         version = self.connection.execute("PRAGMA user_version").fetchone()[0]
@@ -45,21 +46,37 @@ class Database:
     def atomic(self):
         with self.lock:
             level = self.depth
+            if level and (self._rollback_only or not self.connection.in_transaction):
+                self._rollback_only = True
+                raise RuntimeError("Transaction was rolled back; exit the outer atomic block")
             self.connection.execute("BEGIN IMMEDIATE" if level == 0 else f"SAVEPOINT uow_{level}")
             self.depth += 1
             try:
                 yield self.connection
+                if self._rollback_only or not self.connection.in_transaction:
+                    self._rollback_only = True
+                    raise RuntimeError("Transaction was rolled back; exit the outer atomic block")
                 self.connection.execute("COMMIT" if level == 0 else f"RELEASE uow_{level}")
             except BaseException:
-                if level == 0:
-                    if self.connection.in_transaction:
-                        self.connection.execute("ROLLBACK")
-                else:
-                    self.connection.execute(f"ROLLBACK TO uow_{level}")
-                    self.connection.execute(f"RELEASE uow_{level}")
+                if not self.connection.in_transaction:
+                    # SQLite may roll back the whole transaction, destroying all
+                    # savepoints. A new SAVEPOINT would otherwise commit alone.
+                    self._rollback_only = True
+                elif level == 0:
+                    self.connection.execute("ROLLBACK")
+                elif not self._rollback_only:
+                    try:
+                        self.connection.execute(f"ROLLBACK TO uow_{level}")
+                        self.connection.execute(f"RELEASE uow_{level}")
+                    except sqlite3.Error:
+                        # Preserve the original error and force the outer owner
+                        # to roll back if savepoint cleanup itself failed.
+                        self._rollback_only = True
                 raise
             finally:
                 self.depth -= 1
+                if level == 0:
+                    self._rollback_only = False
 
     def require_no_transaction(self):
         """Reject callbacks whose durable checkpoints could still be rolled back.

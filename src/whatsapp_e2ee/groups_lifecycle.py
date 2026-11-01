@@ -279,9 +279,9 @@ class GroupNotifications:
             raise ValueError("Explicit ordinary-group metadata required")
         group = _group(group)
         accounts = tuple(sorted(set(_account(a) for a in accounts)))
-        if not any(self.directory.same_user(a, self.client.address) for a in accounts):
-            raise ValueError("Local account must be a member at initialization")
         with self.store.db.atomic():
+            if not any(self.directory.same_user(a, self.client.address) for a in accounts):
+                raise ValueError("Local account must be a member at initialization")
             if self.store._get("group-accounts", self._key(group)):
                 raise ValueError("Group already initialized")
             self._apply_snapshot("initialize:" + group, group, accounts, revision=revision, now=now)
