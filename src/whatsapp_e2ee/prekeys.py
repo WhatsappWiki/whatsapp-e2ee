@@ -6,6 +6,8 @@ an explicit persistent pointer, not a guess based on ID or insertion order.
 
 from signal_protocol import Curve, KeyHelper, PreKeyBundle, PreKeyRecord
 
+from whatsapp_e2ee.store import key
+
 
 class PreKeys:
     def __init__(self, client):
@@ -14,7 +16,12 @@ class PreKeys:
     def _allocate(self, kind):
         row = self.store._get("key-next", kind)
         candidate = int(row[0]) if row else 1
-        while candidate < 0xFFFFFF and self.store._get(kind, str(candidate)) is not None:
+        if candidate < 1:
+            raise ValueError("Invalid local prekey allocation cursor; explicit recovery required")
+        while candidate < 0xFFFFFF and (
+            self.store._get(kind, str(candidate)) is not None
+            or self.store._get("key-retired", key(kind, candidate)) is not None
+        ):
             candidate += 1
         if candidate >= 0xFFFFFF:
             raise ValueError("Local prekey ID space exhausted; explicit migration required")
@@ -55,11 +62,27 @@ class PreKeys:
             row = self.store._get("key-active", "signed")
             if row is None:
                 raise ValueError("No active signed prekey; explicitly create one")
-            signed = self.store.load_signed_pre_key(int(row[0]))
+            signed_id = int(row[0])
+            signed = self.store.load_signed_pre_key(signed_id)
             pre = self.store.load_pre_key(pre_key_id) if pre_key_id is not None else None
+            if signed.id != (signed_id & 0xFFFFFFFF) or (
+                pre is not None and pre.id != (pre_key_id & 0xFFFFFFFF)
+            ):
+                raise ValueError("Prekey record ID does not match its storage slot")
+            identity = self.store.get_identity_key_pair().public_key
+            if not Curve.verify_signature(
+                identity.public_key, signed.key_pair.public_key.serialize(), signed.signature
+            ):
+                raise ValueError("Signed prekey signature does not match the local identity")
             kwargs = {}
             if kem_id is not None:
                 kem = self.store.load_kyber_pre_key(kem_id)
+                if kem.id != (kem_id & 0xFFFFFFFF):
+                    raise ValueError("KEM prekey record ID does not match its storage slot")
+                if not Curve.verify_signature(
+                    identity.public_key, kem.key_pair.public_key.serialize(), kem.signature
+                ):
+                    raise ValueError("KEM prekey signature does not match the local identity")
                 kwargs = dict(
                     kyber_pre_key_id=kem.id,
                     kyber_pre_key=kem.key_pair.public_key,
@@ -73,7 +96,7 @@ class PreKeys:
                 signed.id,
                 signed.key_pair.public_key,
                 signed.signature,
-                self.store.get_identity_key_pair().public_key,
+                identity,
                 **kwargs,
             )
 

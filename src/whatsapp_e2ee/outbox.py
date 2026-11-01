@@ -10,6 +10,8 @@ class Outbox:
         self.store = store
 
     def prepare(self, id, request, producer):
+        if not isinstance(id, str) or not id:
+            raise ValueError("A nonempty string message ID is required")
         fingerprint = digest(request)
         with self.store.db.atomic() as c:
             row = c.execute(

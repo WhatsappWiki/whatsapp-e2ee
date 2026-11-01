@@ -11,6 +11,7 @@ from signal_protocol import (
     WhatsAppSessionCipher,
 )
 from signal_protocol.groups import GroupSessionBuilder, SenderKeyName, SenderKeyRecord
+from signal_protocol.store import Direction
 
 from whatsapp_e2ee import payload
 from whatsapp_e2ee.outbox import Outbox
@@ -59,6 +60,7 @@ class Client:
                 raise ValueError("Bundle device mismatch")
             WhatsAppSessionBuilder(self.store, address).process(bundle)
         message = WhatsAppSessionCipher(self.store, address).encrypt(raw)
+        self.store.validate_session_identity(address, Direction.SENDING)
         return Packet(
             address.name,
             address.device_id,

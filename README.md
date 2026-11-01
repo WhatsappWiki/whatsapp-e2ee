@@ -73,6 +73,10 @@ public_bundle = keys.bundle(pre_key_id=opk_id)
 
 `owner` 表示一个本机设备。将同一 store 绑定到另一地址会报错。首次建立接收设备会话时提供对应的 `PreKeyBundle`；已有会话不会因普通发送时传入 bundle 而自动重建。
 
+删除或消费预密钥时，在同一事务内记录退役 ID；自动分配会跳过该 `owner` 下同类密钥的现存与退役 ID。last-resort 密钥按原策略保留。备份恢复须保留分配游标与退役记录，已丢失的历史退役 ID 无法从剩余密钥推断。`PreKeys.bundle()` 导出前核对记录 ID，并验证 SPK/KEM 签名与当前本机身份一致；导出不消费密钥，也不自动发布。
+
+新的点对点加解密在提交前核对实际采用的会话身份，包括解密时选中的归档会话。远端身份不再可信或本机身份已改变时，整次消息操作回滚；身份批准与新会话建立由上层显式处理。历史已接受密文仍可返回持久去重结果，不推进会话或新增业务事件。
+
 ### 消息准备、投递与接收
 
 以下片段接续上方初始化；`peer` 是目标设备的 `SignalProtocolAddress`，`peer_bundle` 是该设备的公开预密钥包：
@@ -91,6 +95,8 @@ wire = queue.prepare("message-id", peer.name)
 ```
 
 准备阶段生成并持久化密文，不调用网络。相同消息 ID 与相同输入复用 outbox；同一 ID 对应不同正文或目标时抛出 `Conflict`。传输超时重发已冻结的节点字节；协议 retry 创建与原 logical ID 关联的新 attempt，重新加密并推进链状态。
+
+发送与接收的消息 ID 必须为非空字符串；非法 ID 在推进会话或消费预密钥前拒绝。消息去重按发送设备、群上下文及所选命名空间隔离；业务事件确认后，重复消息或已接受的 retry 不会重新创建待处理事件。
 
 接收入口为 `stanza.receive_message(..., authenticated_transport=True, own_device_check=...)`。传输边界提供认证结果，可信设备目录负责自身设备判定。群 SKDM 与正文共用外部消息 ID，使用独立内部去重槽并在同一事务中处理。经过认证的合法重试可以推进会话状态，但不得改变逻辑正文，业务事件只提交一次。
 
@@ -199,6 +205,10 @@ public_bundle = keys.bundle(pre_key_id=opk_id)
 
 `owner` identifies one local device. Binding the same store to another address raises an error. Provide the corresponding `PreKeyBundle` when establishing a recipient-device session for the first time. Passing a bundle during an ordinary send does not automatically rebuild an existing session.
 
+Deleting or consuming a prekey records its retired ID in the same transaction. Automatic allocation skips existing and retired IDs for that key type and `owner`. Last-resort keys retain their existing reuse policy. Backup recovery must preserve allocation cursors and retirement records; lost historical retired IDs cannot be inferred from remaining keys. Before export, `PreKeys.bundle()` checks record IDs and verifies SPK/KEM signatures against the current local identity. Export neither consumes keys nor publishes them automatically.
+
+New pairwise encryption and decryption check the identity of the session actually used before committing, including archived sessions selected during decryption. If the remote identity is no longer trusted or the local identity has changed, the entire message operation rolls back. Identity approval and new-session establishment remain explicit caller responsibilities. Previously accepted ciphertext can still return its durable deduplication result without advancing a session or creating another business event.
+
 ### Message preparation, delivery, and reception
 
 The following snippet continues the initialization above. `peer` is the target device's `SignalProtocolAddress`, and `peer_bundle` is its public prekey bundle:
@@ -217,6 +227,8 @@ wire = queue.prepare("message-id", peer.name)
 ```
 
 Preparation generates and persists ciphertext without network calls. The same message ID and inputs reuse the outbox; different content or targets for the same ID raise `Conflict`. Transport timeouts retransmit frozen node bytes. Protocol retries create a new attempt linked to the original logical ID, encrypt again, and advance chain state.
+
+Message IDs for sending and receiving must be nonempty strings; invalid IDs are rejected before session advancement or prekey consumption. Message deduplication is isolated by sender device, group context, and selected namespace. After a business event is acknowledged, duplicate messages and previously accepted retries do not recreate pending events.
 
 The receive entry point is `stanza.receive_message(..., authenticated_transport=True, own_device_check=...)`. The transport boundary supplies authentication results, and a trusted device directory determines whether a sender is a local linked device. Group SKDM and content share an external message ID, use separate internal deduplication slots, and are processed in the same transaction. Authenticated valid retries may advance session state but cannot change the logical body; business events are committed once.
 

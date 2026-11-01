@@ -6,6 +6,7 @@ import json
 from signal_protocol import WHATSAPP, WhatsAppGroupCipher, WhatsAppSessionCipher
 from signal_protocol.groups import GroupSessionBuilder, SenderKeyName
 from signal_protocol.protocol import SenderKeyDistributionMessage
+from signal_protocol.store import Direction
 
 from whatsapp_e2ee import payload
 from whatsapp_e2ee.packets import Conflict, digest
@@ -28,6 +29,8 @@ class MessageReceiver:
         content_slot="message",
         retry_count=0,
     ):
+        if not isinstance(id, str) or not id:
+            raise ValueError("A nonempty string message ID is required")
         if type(retry_count) is not int or not 0 <= retry_count <= 100:
             raise ValueError("Invalid local retry count")
         if packet.kind not in ("msg", "pkmsg", "skmsg"):
@@ -150,11 +153,13 @@ class MessageReceiver:
                 return WhatsAppGroupCipher(
                     self.store, SenderKeyName(expected_group, sender)
                 ).decrypt(packet.ciphertext, accept)
-            return WhatsAppSessionCipher(self.store, sender).decrypt(
+            raw = WhatsAppSessionCipher(self.store, sender).decrypt(
                 packet.ciphertext,
                 accept,
                 message_type={"msg": 2, "pkmsg": 3}[packet.kind],
             )
+            self.store.validate_session_identity(sender, Direction.RECEIVING)
+            return raw
 
 
 __all__ = ["MessageReceiver"]

@@ -12,7 +12,11 @@ from signal_protocol import (
     SessionRecord,
     SignedPreKeyRecord,
 )
-from signal_protocol.exceptions import InvalidKeyIdException
+from signal_protocol.exceptions import (
+    InvalidKeyException,
+    InvalidKeyIdException,
+    UntrustedIdentityException,
+)
 from signal_protocol.groups import SenderKeyRecord
 
 from whatsapp_e2ee.database import Database
@@ -100,6 +104,23 @@ class SQLiteStore:
         old = self.get_identity(address)
         return old is None or old == identity
 
+    def validate_session_identity(self, address, direction):
+        """Check the state actually selected by a pairwise operation.
+
+        Call before the enclosing message transaction commits. In particular,
+        decryption may have promoted an archived session; checking only the
+        current state before decrypting would miss that identity change.
+        """
+        with self.db.atomic():
+            state = self.load_session(address).session_state
+            identity = state.remote_identity_key
+            if identity is None or not self.is_trusted_identity(address, identity, direction):
+                raise UntrustedIdentityException(address.name, identity)
+            if state.local_identity_key != self.get_identity_key_pair().public_key:
+                raise InvalidKeyException(
+                    "Local identity changed; explicit session recovery required"
+                )
+
     def load_session(self, address):
         row = self._get("session", self.address(address))
         return SessionRecord(row[0] if row else None, profile=WHATSAPP)
@@ -153,7 +174,13 @@ class SQLiteStore:
         return self._get("pre", str(id & 0xFFFFFFFF)) is not None
 
     def remove_pre_key(self, id):
-        self._remove("pre", str(id & 0xFFFFFFFF))
+        self._retire_key("pre", id)
+
+    def _retire_key(self, kind, id):
+        id &= 0xFFFFFFFF
+        with self.db.atomic():
+            self._put("key-retired", key(kind, id), b"1")
+            self._remove(kind, str(id))
 
     def load_signed_pre_key(self, id):
         return self._load_key("signed", id, SignedPreKeyRecord)
@@ -165,7 +192,7 @@ class SQLiteStore:
         return self._get("signed", str(id & 0xFFFFFFFF)) is not None
 
     def remove_signed_pre_key(self, id):
-        self._remove("signed", str(id & 0xFFFFFFFF))
+        self._retire_key("signed", id)
 
     def load_signed_pre_keys(self):
         with self.db.atomic() as c:
@@ -188,7 +215,7 @@ class SQLiteStore:
         with self.db.atomic():
             row = self._get("kem", str(id & 0xFFFFFFFF))
             if row and not row[1]:
-                self._remove("kem", str(id & 0xFFFFFFFF))
+                self._retire_key("kem", id)
 
     def load_sender_key(self, name):
         row = self._get("sender", key(name.group_id, name.sender.name, name.sender.device_id))
