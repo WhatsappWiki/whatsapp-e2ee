@@ -111,7 +111,7 @@ def decrypt_to_file(blob, media_key, kind, destination, **checks):
 
 
 def chunks(total, sizes=None):
-    if total < 26 or (total - 10) % 16:
+    if type(total) is not int or total < 26 or (total - 10) % 16:
         raise ValueError("Invalid blob size")
     sizes = (
         list(sizes)
@@ -151,7 +151,11 @@ def decrypt_chunk(data, media_key, kind, *, total, index, sidecar_bytes, sizes=N
     Explicit sizes are ciphertext-blob lengths, not raw JPEG scan lengths.
     """
     layout = chunks(total, sizes)
-    if not 0 <= index < len(layout) or len(sidecar_bytes) != 10 * len(layout):
+    if (
+        type(index) is not int
+        or not 0 <= index < len(layout)
+        or len(sidecar_bytes) != 10 * len(layout)
+    ):
         raise IntegrityError("Invalid sidecar/index")
     start, n = layout[index]
     if len(data) != n + (16 if start else 0):

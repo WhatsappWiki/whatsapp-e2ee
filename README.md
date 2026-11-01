@@ -102,7 +102,7 @@ wire = queue.prepare("message-id", peer.name)
 
 `own_device_check` 在接收事务内执行，只做本地判定；查询设备目录时须复用客户端的同一个 `Database` 实例。自身设备判定与接收提交使用同一事务，避免并发撤销别名后仍使用旧判定接收自身设备副本。
 
-投递、媒体上传和上传对账必须在外层数据库事务结束后调用；存在活动事务时抛出 `RuntimeError`，防止请求已发送但本地检查点随后回滚。
+投递、媒体上传、上传对账、分块下载和 `RangeDownload.finalize()` 必须在关联数据库的外层事务结束后调用；存在活动事务时抛出 `RuntimeError`，防止网络回调或文件发布依赖尚未提交的检查点。
 
 SQLite 主动回滚整个事务时，所有外层 `atomic()` 块一起失效，并保留原始数据库异常。即使调用方捕获异常，也必须退出最外层事务后才能重试，后续会话与 outbox 写入不能独立提交。只回滚到保存点的普通失败仍允许外层事务继续。
 
@@ -131,6 +131,10 @@ SQLite 主动回滚整个事务时，所有外层 `atomic()` 块一起失效，�
 上传成功记录与待对账状态独立于本地密文缓存保存。即使缓存被清理，已成功上传仍返回原回执，结果不确定时仍要求先对账，不会自动重新 POST。只有新的上传尝试才校验本地密文；对账确认 absent 后若缓存缺失，须先用相同源文件和已保留的 key 显式重建，再重新上传。
 
 完整文件和 Range 响应检查长度、范围与编码。对外文件通过完整 MAC、明文与密文双摘要、padding 和长度校验后原子发布。单块认证结果只用于下载恢复，完整文件校验通过后才发布最终输出。
+
+`RangeDownload` 的任务 ID 必须为非空字符串，密文总长度与分块索引必须为整数，不能使用布尔值或浮点值。`missing()` 重新认证缓存块，将损坏块移除并列为缺失，保留其他有效进度；正确认证的新数据可修复损坏的缓存记录。最终组装也检查缓存块及 CBC 前置块，再执行完整文件校验；描述符或主文件校验失败不会把有效块误判为缓存损坏。
+
+完整下载在发起 GET 前校验长度、密钥类型及摘要，并在响应流成功关闭后才解密发布；关闭、校验或文件同步失败时保留原目标文件并清理临时文件。HTTP 长度与范围只接受 ASCII 十进制数字。批量分块下载会保存传入的请求头，使生成器形式的认证头也能用于每个 Range 请求。
 
 `scan_chunk_sizes` 将编码器提供的 scan-length 数组转换为 CBC 块布局；媒体元数据约束扫描数量、长度和 sidecar 条件。编码器、转码器与播放器由调用方提供。
 
@@ -240,7 +244,7 @@ The receive entry point is `stanza.receive_message(..., authenticated_transport=
 
 `own_device_check` runs inside the receive transaction and must perform only local checks. Device-directory queries must reuse the client's same `Database` instance. Own-device classification and receive acceptance share one transaction, preventing concurrent alias revocation from leaving a stale authorization for a linked-device copy.
 
-Call dispatch, media upload, and upload reconciliation after the outer database transaction has ended. An active transaction raises `RuntimeError`, preventing a sent request from losing its local checkpoint through a later rollback.
+Call dispatch, media upload, upload reconciliation, range download, and `RangeDownload.finalize()` after the associated database's outer transaction has ended. An active transaction raises `RuntimeError`, preventing network callbacks or file publication from relying on uncommitted checkpoints.
 
 If SQLite rolls back the entire transaction, all enclosing `atomic()` blocks become unusable and the original database exception is preserved. Even if the caller catches that exception, it must exit the outermost transaction before retrying; later session and outbox writes cannot commit independently. An ordinary failure rolled back to a savepoint still allows the outer transaction to continue.
 
@@ -269,6 +273,10 @@ Alias and membership checks for multi-device sends and group initialization shar
 Successful upload records and pending reconciliation state persist independently of the local encrypted cache. If the cache is removed, a completed upload still returns its recorded receipt, and an uncertain upload still requires reconciliation without an automatic new POST. Only a new upload attempt validates local ciphertext. After an absent result, a missing cache must be explicitly rebuilt from the same source file and retained key before another upload.
 
 Complete-file and Range responses are checked for length, range, and encoding. Output files are published atomically after full MAC, plaintext and ciphertext hashes, padding, and length checks pass. Individual authenticated chunks support download recovery; final output is published only after complete-file verification.
+
+`RangeDownload` job IDs must be nonempty strings, and encrypted totals and chunk indexes must be integers rather than booleans or floats. `missing()` reauthenticates cached chunks, removes damaged entries and lists them as missing while retaining valid progress. Fresh authenticated bytes can repair damaged cache records. Final assembly also checks cached chunks and their preceding CBC blocks before complete-file verification; a descriptor or main-file verification failure does not misclassify valid chunks as cache corruption.
+
+Complete downloads validate lengths, key types, and hashes before issuing GET and decrypt for publication only after the response stream closes successfully. Close, verification, or file-sync failures preserve the original destination and remove temporary files. HTTP lengths and ranges accept only ASCII decimal digits. Batched range downloads retain supplied headers so authentication headers passed as a generator are used for every Range request.
 
 `scan_chunk_sizes` converts an encoder-supplied scan-length array into a CBC block layout. Media metadata constrains scan counts, lengths, and sidecar conditions. Callers provide encoders, transcoders, and players.
 

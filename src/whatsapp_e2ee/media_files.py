@@ -125,6 +125,8 @@ class RangeDownload:
     """
 
     def __init__(self, store, id):
+        if not isinstance(id, str) or not id:
+            raise ValueError("A nonempty string range job ID is required")
         self.store, self.id = store, id
 
     def initialize(
@@ -165,36 +167,61 @@ class RangeDownload:
             raise KeyError(self.id)
         return json.loads(row[0])
 
-    def missing(self):
+    def _verify_chunk(self, spec, index, data):
+        decrypt_chunk(
+            data,
+            bytes.fromhex(spec["media_key"]),
+            spec["kind"],
+            total=spec["total"],
+            index=index,
+            sidecar_bytes=bytes.fromhex(spec["sidecar"]),
+            sizes=spec["sizes"],
+        )
+
+    def missing(self, *, index=None):
+        """Return required ranges, removing any cache entries that fail authentication.
+
+        An optional index limits inspection to one chunk for a single GET.
+        """
         with self.store.db.atomic():
             s = self._spec()
-            return [
-                (i, max(0, start - 16), start + n - 1)
-                for i, (start, n) in enumerate(chunks(s["total"], s["sizes"]))
-                if self.store._get("range-chunk", key(self.id, i)) is None
-            ]
+            layout = chunks(s["total"], s["sizes"])
+            if index is not None and (type(index) is not int or not 0 <= index < len(layout)):
+                raise IntegrityError("Invalid range index")
+            required = []
+            for i in range(len(layout)) if index is None else (index,):
+                chunk_id = key(self.id, i)
+                old = self.store._get("range-chunk", chunk_id)
+                if old:
+                    try:
+                        self._verify_chunk(s, i, old[0])
+                    except IntegrityError:
+                        self.store._remove("range-chunk", chunk_id)
+                    else:
+                        continue
+                start, n = layout[i]
+                required.append((i, max(0, start - 16), start + n - 1))
+            return required
 
     def accept(self, index, data):
         with self.store.db.atomic():
             s = self._spec()
-            decrypt_chunk(
-                data,
-                bytes.fromhex(s["media_key"]),
-                s["kind"],
-                total=s["total"],
-                index=index,
-                sidecar_bytes=bytes.fromhex(s["sidecar"]),
-                sizes=s["sizes"],
-            )
+            self._verify_chunk(s, index, data)
             id = key(self.id, index)
             old = self.store._get("range-chunk", id)
             if old and old[0] != data:
-                raise IntegrityError("Conflicting authenticated range")
+                try:
+                    self._verify_chunk(s, index, old[0])
+                except IntegrityError:
+                    pass  # Authenticated fresh bytes can repair a corrupt cache entry.
+                else:
+                    raise IntegrityError("Conflicting authenticated range")
             self.store._put("range-chunk", id, data)
 
     def finalize(self, destination):
         # The descriptor and accepted chunks are immutable, so file I/O need not
         # hold the write transaction. Finalization is repeatable after a crash.
+        self.store.db.require_no_transaction()
         s = self._spec()
         if self.missing():
             raise IntegrityError("Incomplete download")
@@ -205,6 +232,7 @@ class RangeDownload:
                     row = self.store._get("range-chunk", key(self.id, i))
                     if row is None:
                         raise IntegrityError("Missing cached chunk")
+                    self._verify_chunk(s, i, row[0])
                     out.write(row[0][16:] if i else row[0])
             decrypt_file(
                 tmp,

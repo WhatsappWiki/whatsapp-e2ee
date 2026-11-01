@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from whatsapp_e2ee.media import IntegrityError
+from whatsapp_e2ee.media import IntegrityError, derive
 from whatsapp_e2ee.media_files import BLOCK, decrypt_file
 
 
@@ -121,8 +121,11 @@ def read_response(response, limit):
 
 def download_range(job, index, url, transport, *, headers=()):
     """Fetch one missing authenticated chunk. A failed request never marks it done."""
+    job.store.db.require_no_transaction()
+    if type(index) is not int:
+        raise ValueError("Range index must be an integer")
     s = job._spec()
-    missing = {i: (start, end) for i, start, end in job.missing()}
+    missing = {i: (start, end) for i, start, end in job.missing(index=index)}
     if index not in missing:
         return False
     start, end = missing[index]
@@ -137,7 +140,7 @@ def download_range(job, index, url, transport, *, headers=()):
             raise TransferError("Encoded media response is not byte-range stable")
         if response.status == 206:
             value = h.get("content-range", "")
-            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", value)
+            match = re.fullmatch(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)", value)
             if not match or tuple(map(int, match.groups())) != (start, end, s["total"]):
                 raise TransferError("Content-Range does not match request and descriptor")
         elif response.status == 200 and start == 0 and end == s["total"] - 1:
@@ -147,7 +150,9 @@ def download_range(job, index, url, transport, *, headers=()):
             raise TransferError("Media server did not honor the required range")
         expected = end - start + 1
         if "content-length" in h and (
-            not h["content-length"].isdigit() or int(h["content-length"]) != expected
+            not h["content-length"].isascii()
+            or not h["content-length"].isdigit()
+            or int(h["content-length"]) != expected
         ):
             raise TransferError("Content-Length mismatch")
     except BaseException:
@@ -161,9 +166,11 @@ def download_range(job, index, url, transport, *, headers=()):
 
 
 def download_all(job, url, transport, destination, *, headers=(), max_requests=10000):
+    job.store.db.require_no_transaction()
     missing = job.missing()
     if type(max_requests) is not int or max_requests < len(missing):
         raise ValueError("Range request budget is too small")
+    headers = tuple(_headers(headers).items())
     for index, _, _ in missing:
         download_range(job, index, url, transport, headers=headers)
     job.finalize(destination)
@@ -171,6 +178,14 @@ def download_all(job, url, transport, destination, *, headers=(), max_requests=1
 
 def download_file(url, transport, destination, media, *, headers=()):
     """Complete media GET, bounded encrypted staging and verified publication."""
+    if type(media.length) is not int or media.length < 0:
+        raise ValueError("Invalid media plaintext length")
+    derive(media.media_key, media.kind)
+    if any(
+        not isinstance(digest, (bytes, bytearray, memoryview)) or len(digest) != 32
+        for digest in (media.plaintext_hash, media.encrypted_hash)
+    ):
+        raise ValueError("Media hashes must contain 32 bytes")
     supplied = _headers(headers)
     if set(supplied) & {"range", "accept-encoding"}:
         raise ValueError("Complete download controls range/encoding headers")
@@ -179,25 +194,31 @@ def download_file(url, transport, destination, media, *, headers=()):
     response = transport(Request("GET", _url(url), tuple(supplied.items())))
     temporary = None
     try:
-        h = _headers(response.headers)
-        if response.status != 200 or "content-range" in h:
-            raise TransferError("Expected complete media response")
-        if h.get("content-encoding", "identity").lower() != "identity":
-            raise TransferError("Encoded media response is not byte stable")
-        if "content-length" in h and (
-            not h["content-length"].isdigit() or int(h["content-length"]) != expected
-        ):
-            raise TransferError("Content-Length mismatch")
-        fd, temporary = tempfile.mkstemp(prefix=".wa-download-", dir=Path(destination).parent)
-        size = 0
-        with os.fdopen(fd, "wb") as out:
-            for chunk in _body_chunks(response.body):
-                if not isinstance(chunk, bytes) or size + len(chunk) > expected:
-                    raise TransferError("Invalid or oversized media body")
-                size += len(chunk)
-                out.write(chunk)
-        if size != expected:
-            raise TransferError("Truncated complete media response")
+        try:
+            h = _headers(response.headers)
+            if response.status != 200 or "content-range" in h:
+                raise TransferError("Expected complete media response")
+            if h.get("content-encoding", "identity").lower() != "identity":
+                raise TransferError("Encoded media response is not byte stable")
+            if "content-length" in h and (
+                not h["content-length"].isascii()
+                or not h["content-length"].isdigit()
+                or int(h["content-length"]) != expected
+            ):
+                raise TransferError("Content-Length mismatch")
+            fd, temporary = tempfile.mkstemp(prefix=".wa-download-", dir=Path(destination).parent)
+            size = 0
+            with os.fdopen(fd, "wb") as out:
+                for chunk in _body_chunks(response.body):
+                    if not isinstance(chunk, bytes) or size + len(chunk) > expected:
+                        raise TransferError("Invalid or oversized media body")
+                    size += len(chunk)
+                    out.write(chunk)
+            if size != expected:
+                raise TransferError("Truncated complete media response")
+        finally:
+            # Finish transport cleanup before decrypt_file can publish output.
+            response.close()
         return decrypt_file(
             temporary,
             destination,
@@ -208,11 +229,8 @@ def download_file(url, transport, destination, media, *, headers=()):
             length=media.length,
         )
     finally:
-        try:
-            response.close()
-        finally:
-            if temporary is not None:
-                os.unlink(temporary)
+        if temporary is not None:
+            os.unlink(temporary)
 
 
 class _MultipartBody:
