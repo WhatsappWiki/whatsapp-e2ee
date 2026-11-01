@@ -158,8 +158,8 @@ class DeviceNotifications:
     def __init__(self, directory, local_address, *, identity_lookup=None):
         self.directory, self.store = directory, directory.store
         self.local_address = local_address
-        self.identity_lookup = identity_lookup or (
-            lambda account: self.store.get_identity(device_address(account, 0))
+        self.identity_lookup = (
+            directory.identity_lookup if identity_lookup is None else identity_lookup
         )
 
     def apply(

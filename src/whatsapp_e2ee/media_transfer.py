@@ -282,6 +282,7 @@ class Uploads:
         return receipt
 
     def reconcile(self, id, lookup):
+        self.store.db.require_no_transaction()
         attempt = self.pending(id)
         if attempt is None or attempt["state"] not in ("in_flight", "unknown"):
             raise ValueError("No ambiguous upload to reconcile")
@@ -308,6 +309,7 @@ class Uploads:
 
     def send(self, id, url, transport, parse_receipt, *, headers=(), max_attempts=3):
         # No full-file validation or callback occurs under the write transaction.
+        self.store.db.require_no_transaction()
         media = self.jobs.load(id, verify_file=True)
         supplied = _headers(headers)
         if set(supplied) & {"content-length", "content-type"}:

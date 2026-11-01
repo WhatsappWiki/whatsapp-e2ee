@@ -61,6 +61,16 @@ class Database:
             finally:
                 self.depth -= 1
 
+    def require_no_transaction(self):
+        """Reject callbacks whose durable checkpoints could still be rolled back.
+
+        Acquire the connection lock so another thread's transaction can finish;
+        a transaction held by this caller is an error, including raw SQL BEGIN.
+        """
+        with self.lock:
+            if self.depth or self.connection.in_transaction:
+                raise RuntimeError("Transport callbacks require no active transaction")
+
     def close(self):
         with self.lock:
             if self.depth:

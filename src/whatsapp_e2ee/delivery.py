@@ -44,6 +44,7 @@ class Delivery:
         This callback is never invoked under a SQLite transaction. Receipt state
         is packet-target scoped; group-member delivery is not inferred from it.
         """
+        self.store.db.require_no_transaction()
         packets = self.prepared(id)
         for p in packets:
             marker = key(id, p.recipient, p.device, p.kind)

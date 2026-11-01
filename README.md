@@ -94,13 +94,15 @@ wire = queue.prepare("message-id", peer.name)
 
 接收入口为 `stanza.receive_message(..., authenticated_transport=True, own_device_check=...)`。传输边界提供认证结果，可信设备目录负责自身设备判定。群 SKDM 与正文共用外部消息 ID，使用独立内部去重槽并在同一事务中处理。经过认证的合法重试可以推进会话状态，但不得改变逻辑正文，业务事件只提交一次。
 
+投递、媒体上传和上传对账必须在外层数据库事务结束后调用；存在活动事务时抛出 `RuntimeError`，防止请求已发送但本地检查点随后回滚。
+
 `pending_events()` 读取待处理事件，`acknowledge_event(id)` 标记事件完成。server ACK 与接收设备的 delivery/read 回执分开处理；逐目标回执保持单调状态。
 
 ### 设备目录与群生命周期
 
 `DeviceDirectory.apply_query` 默认要求 ADV 验签，身份来自已信任的主设备记录或显式 `identity_lookup`。由外部可信来源提供的无证明快照可显式使用 `verification="trusted_snapshot"`；快照携带证明时仍执行验签。
 
-`DeviceNotifications` 处理远端设备增删和离线失效通知，`GroupNotifications` 处理普通群的 add/remove/modify。目录更新使用 revision 和有效期约束；过期快照需要显式刷新。群发送冻结成员与设备快照，成员或设备变化可以触发 SenderKey 轮换或定向重新分发。自身设备生命周期、身份替换和 raw-ID 重置由上层显式处理。
+`DeviceNotifications` 默认沿用目录的身份查询器，也可显式指定独立的 `identity_lookup`；它处理远端设备增删和离线失效通知，`GroupNotifications` 处理普通群的 add/remove/modify。目录更新使用 revision 和有效期约束；过期快照需要显式刷新。群发送冻结成员与设备快照，成员或设备变化可以触发 SenderKey 轮换或定向重新分发。自身设备生命周期、身份替换和 raw-ID 重置由上层显式处理。
 
 ### 媒体处理
 
@@ -210,13 +212,15 @@ Preparation generates and persists ciphertext without network calls. The same me
 
 The receive entry point is `stanza.receive_message(..., authenticated_transport=True, own_device_check=...)`. The transport boundary supplies authentication results, and a trusted device directory determines whether a sender is a local linked device. Group SKDM and content share an external message ID, use separate internal deduplication slots, and are processed in the same transaction. Authenticated valid retries may advance session state but cannot change the logical body; business events are committed once.
 
+Call dispatch, media upload, and upload reconciliation after the outer database transaction has ended. An active transaction raises `RuntimeError`, preventing a sent request from losing its local checkpoint through a later rollback.
+
 `pending_events()` reads pending events, and `acknowledge_event(id)` marks an event complete. Server ACKs are handled separately from recipient-device delivery/read receipts; per-target receipt state is monotonic.
 
 ### Device directory and group lifecycle
 
 `DeviceDirectory.apply_query` requires ADV verification by default. Identity comes from a trusted primary-device record or an explicit `identity_lookup`. A snapshot without proof supplied by an external trusted source can explicitly use `verification="trusted_snapshot"`; any proof present in a snapshot is still verified.
 
-`DeviceNotifications` handles remote device additions, removals, and offline invalidation notifications. `GroupNotifications` handles ordinary group add/remove/modify events. Directory updates are constrained by revisions and expiry times; expired snapshots require an explicit refresh. Group sends freeze member and device snapshots. Membership or device changes can trigger SenderKey rotation or targeted redistribution. The caller explicitly handles local-device lifecycle, identity replacement, and raw-ID resets.
+`DeviceNotifications` uses the directory's identity lookup by default and accepts an explicit separate `identity_lookup`. It handles remote device additions, removals, and offline invalidation notifications. `GroupNotifications` handles ordinary group add/remove/modify events. Directory updates are constrained by revisions and expiry times; expired snapshots require an explicit refresh. Group sends freeze member and device snapshots. Membership or device changes can trigger SenderKey rotation or targeted redistribution. The caller explicitly handles local-device lifecycle, identity replacement, and raw-ID resets.
 
 ### Media processing
 

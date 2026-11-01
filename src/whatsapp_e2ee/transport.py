@@ -80,6 +80,7 @@ class StanzaDelivery:
         )
 
     def dispatch(self, prepared_id, send):
+        self.store.db.require_no_transaction()
         self.delivery.prepared(prepared_id)  # Validate namespace even for cached wire.
         row = self.store._get("stanza-wire", prepared_id)
         if row is None:
