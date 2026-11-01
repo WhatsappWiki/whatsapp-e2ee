@@ -9,8 +9,38 @@ from pathlib import Path
 
 from whatsapp_e2ee.store import key
 
-_guard = threading.Lock()
+_guard = threading.RLock()
 _locks = weakref.WeakValueDictionary()
+_active = weakref.WeakSet()
+
+
+def _before_fork():
+    # Do not copy an open descriptor before it has been registered, or while
+    # another thread is removing and closing it.
+    _guard.acquire()
+
+
+def _after_fork_parent():
+    _guard.release()
+
+
+def _after_fork_child():
+    global _guard, _locks, _active
+    try:
+        for operation in list(_active):
+            files, operation._files = operation._files, []
+            operation.local = None
+            for fd, _ in files:
+                try:
+                    # Never LOCK_UN: these descriptors share the parent's open
+                    # file descriptions, and an unlock would release its locks.
+                    os.close(fd)
+                except OSError:
+                    pass
+    finally:
+        _locks = weakref.WeakValueDictionary()
+        _active = weakref.WeakSet()
+        _guard = threading.RLock()
 
 
 class UploadBusy(RuntimeError):
@@ -62,9 +92,11 @@ class upload_operation:
             if local is None:
                 local = _LocalLock()
                 _locks[identity] = local
-        if not local.lock.acquire(blocking=False):
-            raise UploadBusy("Another upload or reconciliation is active")
-        self.local = local
+            _active.add(self)
+            if not local.lock.acquire(blocking=False):
+                _active.discard(self)
+                raise UploadBusy("Another upload or reconciliation is active")
+            self.local = local
         try:
             if path is not None:
                 directory = path.parent / ".wa-upload-locks"
@@ -87,9 +119,14 @@ class upload_operation:
         return False
 
     def _acquire_file(self, path):
-        fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        entry = [fd, False]
-        self._files.append(entry)
+        with _guard:
+            fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                entry = [fd, False]
+                self._files.append(entry)
+            except BaseException:
+                os.close(fd)
+                raise
         if os.name == "nt":
             import msvcrt
 
@@ -112,33 +149,41 @@ class upload_operation:
         entry[1] = True
 
     def _release(self):
-        files, self._files = self._files, []
-        local, self.local = self.local, None
-        failure = None
-        try:
-            for fd, locked in reversed(files):
-                try:
+        with _guard:
+            files, self._files = self._files, []
+            local, self.local = self.local, None
+            failure = None
+            try:
+                for fd, locked in reversed(files):
                     try:
-                        if locked and os.name == "nt":
-                            import msvcrt
+                        try:
+                            if locked and os.name == "nt":
+                                import msvcrt
 
-                            os.lseek(fd, 0, os.SEEK_SET)
-                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                        elif locked:
-                            import fcntl
+                                os.lseek(fd, 0, os.SEEK_SET)
+                                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                            elif locked:
+                                import fcntl
 
-                            fcntl.flock(fd, fcntl.LOCK_UN)
-                    finally:
-                        os.close(fd)
-                except BaseException as error:
-                    # A failed unlock/close must not strand the remaining locks.
-                    if failure is None:
-                        failure = error
-        finally:
-            if local is not None:
-                local.lock.release()
-        if failure is not None:
-            raise failure
+                                fcntl.flock(fd, fcntl.LOCK_UN)
+                        finally:
+                            os.close(fd)
+                    except BaseException as error:
+                        # A failed unlock/close must not strand the remaining locks.
+                        if failure is None:
+                            failure = error
+            finally:
+                _active.discard(self)
+                if local is not None:
+                    local.lock.release()
+            if failure is not None:
+                raise failure
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_before_fork, after_in_parent=_after_fork_parent, after_in_child=_after_fork_child
+    )
 
 
 __all__ = ["UploadBusy", "upload_operation"]

@@ -136,6 +136,8 @@ SQLite 主动回滚整个事务时，所有外层 `atomic()` 块一起失效，�
 
 互斥层只将获取锁时的竞争失败转换为 `UploadUncertain`；回调异常与取消不被互斥层改写，退出时释放操作锁。
 
+POSIX `fork()` 后，子进程关闭继承的上传锁句柄并重建本地互斥状态，不解锁父进程持有的操作。子进程须重新打开 `Database` 并创建新的上传或对账操作，不能继续继承的活跃回调或数据库连接。父进程操作未结束时，新操作仍被拒绝；结束后按持久化状态恢复，不自动重发。
+
 上传成功记录与待对账状态独立于本地密文缓存保存。即使缓存被清理，已成功上传仍返回原回执，结果不确定时仍要求先对账，不会自动重新 POST。只有新的上传尝试才校验本地密文；对账确认 absent 后若缓存缺失或损坏，须先用相同源文件和已保留的 key 显式重建，再重新上传。显式重建不改变原密钥、创建时间或已有成功记录。
 
 成功记录优先于过期查询结果，已完成任务再次对账会直接复用原回执。`UploadReceipt` 必须包含非空路径、32 字节密文摘要和与密钥创建时间一致的整数毫秒时间戳；空时间戳不会被补成默认值。媒体任务 ID 须为非空字符串。multipart 请求体只消费一次，取完声明长度的字节即视为消费完成；检测到文件增长时不会继续输出超出声明长度的数据。异常上传响应或本地提交失败保留可对账状态，不自动重发。
@@ -289,6 +291,8 @@ Alias and membership checks for multi-device sends and group initialization shar
 Sending and reconciliation for the same database, owner, and media job ID are mutually exclusive across workers; competing operations raise `UploadUncertain`, while unrelated jobs can proceed independently. Persistent databases use the adjacent `.wa-upload-locks/` directory to coordinate threads, separate connections, and processes without holding a SQLite transaction during callbacks. Keep and share these lock files while workers run. Process exit releases operation ownership, but an uncertain checkpoint still requires explicit reconciliation. Transport and lookup callbacks must synchronously finish or terminate their local operation and must not continue sending in the background after returning. An absent result must come from an authoritative lookup, never elapsed time alone.
 
 The coordination layer converts only lock-acquisition contention into `UploadUncertain`. It preserves callback exceptions and cancellation and releases operation ownership on exit.
+
+After POSIX `fork()`, the child closes inherited upload-lock handles and rebuilds local ownership state without unlocking the parent's operations. The child must reopen `Database` and start new upload or reconciliation operations rather than continue inherited active callbacks or database connections. New operations remain excluded while the parent owns the job; afterward they recover from durable state without automatic retransmission.
 
 Successful upload records and pending reconciliation state persist independently of the local encrypted cache. If the cache is removed, a completed upload still returns its recorded receipt, and an uncertain upload still requires reconciliation without an automatic new POST. Only a new upload attempt validates local ciphertext. After an absent result, a missing or damaged cache must be explicitly rebuilt from the same source file and retained key before another upload. Explicit rebuilding preserves the original key, creation time, and any successful upload record.
 
