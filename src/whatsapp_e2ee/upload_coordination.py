@@ -32,8 +32,7 @@ class upload_operation:
     def __init__(self, store, id):
         self.store, self.id = store, id
         self.local = None
-        self.fd = None
-        self.locked = False
+        self._files = []
 
     def __enter__(self):
         store, id = self.store, self.id
@@ -48,7 +47,16 @@ class upload_operation:
                 "SELECT CAST(? AS TEXT)", (store.owner,)
             ).fetchone()[0]
         path = Path(database).resolve() if database else None
-        identity = (path if path is not None else store.db, owner, id)
+        if path is None:
+            file_id = None
+        else:
+            status = path.stat()
+            file_id = (
+                ("file", status.st_dev, status.st_ino)
+                if status.st_ino
+                else ("path", str(path).casefold() if os.name == "nt" else str(path))
+            )
+        identity = (file_id if path is not None else store.db, owner, id)
         with _guard:
             local = _locks.get(identity)
             if local is None:
@@ -61,32 +69,14 @@ class upload_operation:
             if path is not None:
                 directory = path.parent / ".wa-upload-locks"
                 directory.mkdir(mode=0o700, exist_ok=True)
-                name = hashlib.sha256(key(str(path), owner, id).encode()).hexdigest()
-                self.fd = os.open(
-                    directory / name,
-                    os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                )
-                if os.name == "nt":
-                    import msvcrt
-
-                    if os.fstat(self.fd).st_size == 0:
-                        os.write(self.fd, b"\0")
-                    os.lseek(self.fd, 0, os.SEEK_SET)
-                    try:
-                        msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)
-                    except OSError as error:
-                        if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                            raise
-                        raise UploadBusy("Another upload or reconciliation is active") from error
-                else:
-                    import fcntl
-
-                    try:
-                        fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError as error:
-                        raise UploadBusy("Another upload or reconciliation is active") from error
-                self.locked = True
+                # File identity unifies case aliases. Also hold the previous
+                # pathname lock so workers from before this fix still exclude us.
+                names = {
+                    hashlib.sha256(key(value, owner, id).encode()).hexdigest()
+                    for value in (file_id, str(path))
+                }
+                for name in sorted(names):
+                    self._acquire_file(directory / name)
         except BaseException:
             self._release()
             raise
@@ -96,27 +86,59 @@ class upload_operation:
         # Avoid generator context managers assigning to frozen exceptions.
         return False
 
+    def _acquire_file(self, path):
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        entry = [fd, False]
+        self._files.append(entry)
+        if os.name == "nt":
+            import msvcrt
+
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+                raise UploadBusy("Another upload or reconciliation is active") from error
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise UploadBusy("Another upload or reconciliation is active") from error
+        entry[1] = True
+
     def _release(self):
-        fd, self.fd = self.fd, None
+        files, self._files = self._files, []
         local, self.local = self.local, None
+        failure = None
         try:
-            if fd is not None:
+            for fd, locked in reversed(files):
                 try:
-                    if self.locked and os.name == "nt":
-                        import msvcrt
+                    try:
+                        if locked and os.name == "nt":
+                            import msvcrt
 
-                        os.lseek(fd, 0, os.SEEK_SET)
-                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                    elif self.locked:
-                        import fcntl
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        elif locked:
+                            import fcntl
 
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                finally:
-                    os.close(fd)
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                    finally:
+                        os.close(fd)
+                except BaseException as error:
+                    # A failed unlock/close must not strand the remaining locks.
+                    if failure is None:
+                        failure = error
         finally:
-            self.locked = False
             if local is not None:
                 local.lock.release()
+        if failure is not None:
+            raise failure
 
 
 __all__ = ["UploadBusy", "upload_operation"]
