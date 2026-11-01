@@ -307,28 +307,45 @@ class Uploads:
                 self._write(id, attempt)
             return None
 
+    def _check_outcome(self, id):
+        """Return recorded success or require reconciliation, without cache I/O.
+
+        Call under the shared transaction. Completed/uncertain uploads outlive
+        their local encrypted files; only a new POST needs those bytes.
+        """
+        checkpoint = self.store._get("media-upload", id)
+        previous = self.pending(id)
+        if checkpoint:
+            path, stamp = json.loads(checkpoint[0])
+            return UploadReceipt(path, stamp, self.jobs.load(id).encrypted_hash)
+        if previous and previous["state"] == "uploaded":
+            return UploadReceipt(
+                previous["direct_path"],
+                previous["timestamp_ms"],
+                bytes.fromhex(previous["encrypted_hash"]),
+            )
+        if previous and previous["state"] in ("in_flight", "unknown"):
+            raise UploadUncertain("Previous upload outcome needs explicit reconciliation")
+        return None
+
     def send(self, id, url, transport, parse_receipt, *, headers=(), max_attempts=3):
         # No full-file validation or callback occurs under the write transaction.
         self.store.db.require_no_transaction()
-        media = self.jobs.load(id, verify_file=True)
         supplied = _headers(headers)
         if set(supplied) & {"content-length", "content-type"}:
             raise ValueError("Multipart framing headers are controlled by the adapter")
         endpoint = _url(url)
         with self.store.db.atomic():
+            receipt = self._check_outcome(id)
+            if receipt is not None:
+                return receipt
+        media = self.jobs.load(id, verify_file=True)
+        with self.store.db.atomic():
+            # Another sender/reconciler may have run during file verification.
+            receipt = self._check_outcome(id)
+            if receipt is not None:
+                return receipt
             previous = self.pending(id)
-            checkpoint = self.store._get("media-upload", id)
-            if checkpoint:
-                path, stamp = json.loads(checkpoint[0])
-                return UploadReceipt(path, stamp, media.encrypted_hash)
-            if previous and previous["state"] == "uploaded":
-                return UploadReceipt(
-                    previous["direct_path"],
-                    previous["timestamp_ms"],
-                    bytes.fromhex(previous["encrypted_hash"]),
-                )
-            if previous and previous["state"] in ("in_flight", "unknown"):
-                raise UploadUncertain("Previous upload outcome needs explicit reconciliation")
             count = (previous["count"] if previous else 0) + 1
             if type(max_attempts) is not int or max_attempts < 1 or count > max_attempts:
                 raise TransferError("Upload attempt budget exhausted")

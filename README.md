@@ -110,6 +110,8 @@ wire = queue.prepare("message-id", peer.name)
 
 `Uploads` 与下载函数接收显式 transport 回调；调用方提供端点、认证头和网络实现。上传中断后保留 `in_flight/unknown`，先对账为 found/absent/unknown；unknown 状态不自动重新 POST。
 
+上传成功记录与待对账状态独立于本地密文缓存保存。即使缓存被清理，已成功上传仍返回原回执，结果不确定时仍要求先对账，不会自动重新 POST。只有新的上传尝试才校验本地密文；对账确认 absent 后若缓存缺失，须先用相同源文件和已保留的 key 显式重建，再重新上传。
+
 完整文件和 Range 响应检查长度、范围与编码。对外文件通过完整 MAC、明文与密文双摘要、padding 和长度校验后原子发布。单块认证结果只用于下载恢复，完整文件校验通过后才发布最终输出。
 
 `scan_chunk_sizes` 将编码器提供的 scan-length 数组转换为 CBC 块布局；媒体元数据约束扫描数量、长度和 sidecar 条件。编码器、转码器与播放器由调用方提供。
@@ -227,6 +229,8 @@ Call dispatch, media upload, and upload reconciliation after the outer database 
 `MediaJobs.prepare/prepare_file` persists creation time when generating the root key and accepts an injected clock or an explicit time. A successful upload binds a path without replacing key creation time. Thumbnails reuse the parent's root key and creation time with separate HKDF info.
 
 `Uploads` and download functions accept explicit transport callbacks. Callers provide endpoints, authentication headers, and network implementations. Interrupted uploads retain `in_flight/unknown` state and are first reconciled as found/absent/unknown; an unknown result does not automatically trigger another POST.
+
+Successful upload records and pending reconciliation state persist independently of the local encrypted cache. If the cache is removed, a completed upload still returns its recorded receipt, and an uncertain upload still requires reconciliation without an automatic new POST. Only a new upload attempt validates local ciphertext. After an absent result, a missing cache must be explicitly rebuilt from the same source file and retained key before another upload.
 
 Complete-file and Range responses are checked for length, range, and encoding. Output files are published atomically after full MAC, plaintext and ciphertext hashes, padding, and length checks pass. Individual authenticated chunks support download recovery; final output is published only after complete-file verification.
 
